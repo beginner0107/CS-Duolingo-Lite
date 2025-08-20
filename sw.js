@@ -1,4 +1,4 @@
-const CACHE_NAME = 'cs-study-app-v4';
+const CACHE_NAME = 'cs-study-app-v8';
 const OFFLINE_URL = '/offline.html';
 const PRECACHE_URLS = [
   '/cs-duolingo-lite.html',

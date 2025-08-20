@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='50%25' x='50%25' dominant-baseline='middle' text-anchor='middle' font-size='48'%3E%F0%9F%A7%A0%3C/text%3E%3C/svg%3E" />
   <title>CS Study App - 스마트 학습 시스템</title>
   <link rel="manifest" href="/manifest.json" />
   <link rel="stylesheet" href="styles.css">
@@ -10,8 +11,8 @@
 <body>
   <div class="container">
     <header>
-      <div class="logo">🧠 CS Study App</div>
-      <div class="stats">
+      <div class="logo" id="logoBtn">🧠 CS Study App</div>
+        <div class="stats">
         <div class="stat-card">
           <span class="stat-label">XP</span>
           <span class="stat-value" id="xp">0</span>
@@ -33,9 +34,10 @@
     </header>
 
     <div class="tabs">
-      <button class="tab active" onclick="showTab(event, 'study')">📚 학습</button>
+      <button id="tab-btn-study" class="tab active" onclick="showTab(event, 'study')">📚 학습</button>
       <button class="tab" onclick="showTab(event, 'add')">➕ 문제 추가</button>
       <button class="tab" onclick="showTab(event, 'manage')">⚙️ 관리</button>
+      <button class="tab" onclick="showTab(event, 'notes')">📝 정리</button>
       <button class="tab" onclick="showTab(event, 'stats')">📊 통계</button>
     </div>
 
@@ -230,7 +232,7 @@
             <span>🗑️</span> 전체 초기화
           </button>
           <button onclick="resetData()" class="secondary">
-            <span>🔁</span> 데이터 리셋
+            <span>🌱</span> 샘플 데이터 추가
           </button>
         </div>
         <div style="margin-top:16px">
@@ -321,6 +323,36 @@
         <div class="card">
           <h2>📅 복습 일정</h2>
           <div id="scheduleContent"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 노트 탭 -->
+    <div id="notesTab" class="tab-content" style="display:none">
+      <div class="grid grid-3">
+        <div class="card">
+          <h2>🗒️ 내 노트</h2>
+          <div class="grid grid-2" style="margin-bottom: 12px;">
+            <input type="text" id="qNoteSearch" placeholder="노트 검색...">
+            <select id="qNoteDeckFilter"></select>
+          </div>
+          <button onclick="newNote()">+ 새 노트</button>
+          <div id="notesList" class="question-list"></div>
+        </div>
+        <div class="card" style="grid-column: span 2;">
+            <h2>노트 편집기</h2>
+            <div class="grid">
+                <select id="deckSelectNotes"></select>
+                <input type="text" id="noteTitle" placeholder="노트 제목">
+                <input type="text" id="noteSource" placeholder="출처 (URL, 책 등)">
+                <textarea id="noteTextarea" style="min-height: 300px;" placeholder="내용을 입력하세요..."></textarea>
+                <div>
+                    <button>줄 추가</button>
+                    <button onclick="noteLinesToDraftQuestions()">선택→퀴즈</button>
+                    <button onclick="exportNoteAsMarkdown()">MD 내보내기</button>
+                    <button class="success">저장</button>
+                </div>
+            </div>
         </div>
       </div>
     </div>

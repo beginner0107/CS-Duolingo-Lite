@@ -1,6 +1,6 @@
 // ========== 데이터베이스 설정 (IndexedDB with Dexie) ==========
 const db = new Dexie('CSStudyApp');
-const APP_SCHEMA_VERSION = 3; // App-level schema/meta version (not Dexie version)
+const APP_SCHEMA_VERSION = 4; // App-level schema/meta version (not Dexie version)
 
 // Schema versioning - Version 1 (initial schema)
 db.version(1).stores({
@@ -35,6 +35,12 @@ db.version(3).stores({
   questions: '++id, deck, type, prompt, answer, keywords, synonyms, explain, created, *tags',
   review: '++id, questionId, ease, interval, due, count, created, updated',
   meta: 'key'
+});
+
+// Dexie schema v4: add notes tables
+db.version(4).stores({
+  notes: '++id, deckId, title, source',
+  note_items: '++id, noteId, ts, text, *tags'
 });
 
 // Legacy localStorage keys for migration
@@ -120,92 +126,81 @@ function setDailyStats(stats) {
 
 // ========== 데이터 마이그레이션 ==========
 async function migrateFromLocalStorage() {
-  try {
-    // Idempotent check using meta.schemaVersion
-    const currentMetaVersion = await getSchemaVersion();
-    if (currentMetaVersion && currentMetaVersion >= APP_SCHEMA_VERSION) {
-      console.log('Schema up-to-date (meta v' + currentMetaVersion + '), skipping migration');
-      return;
-    }
+	try {
+		// Idempotent check using meta.schemaVersion
+		const currentMetaVersion = await getSchemaVersion();
+		if (currentMetaVersion && currentMetaVersion >= APP_SCHEMA_VERSION) {
+			return;
+		}
 
-    console.log('Starting localStorage to IndexedDB migration...');
-    
-    // Migrate profile data
-    const legacyProfile = JSON.parse(localStorage.getItem(LEGACY_KEY.PROFILE) || '{"xp": 0, "streak": 0}');
-    const legacyLastStudy = localStorage.getItem(LEGACY_KEY.LAST);
-    
-    const existingProfile = await db.profile.toCollection().first();
-    if (!existingProfile) {
-      await db.profile.add({
-        xp: legacyProfile.xp || 0,
-        streak: legacyProfile.streak || 0,
-        lastStudy: legacyLastStudy || null
-      });
-    }
+		console.log('Starting localStorage to IndexedDB migration...');
 
-    // Migrate decks data
-    const legacyDecks = JSON.parse(localStorage.getItem(LEGACY_KEY.DECKS) || JSON.stringify(defaultDecks));
-    if ((await db.decks.count()) === 0) {
-      for (const deck of legacyDecks) {
-        await db.decks.add({
-          id: deck.id, // keep legacy id if present
-          name: deck.name,
-          created: new Date()
-        });
-      }
-    }
+		// Migrate profile data
+		const legacyProfileRaw = localStorage.getItem(LEGACY_KEY.PROFILE);
+		if (legacyProfileRaw) {
+			const legacyProfile = JSON.parse(legacyProfileRaw);
+			const legacyLastStudy = localStorage.getItem(LEGACY_KEY.LAST);
+			const existingProfile = await db.profile.toCollection().first();
+			if (!existingProfile) {
+				await db.profile.add({
+					xp: legacyProfile.xp || 0,
+					streak: legacyProfile.streak || 0,
+					lastStudy: legacyLastStudy || null
+				});
+			}
+		}
 
-    // Migrate questions data
-    const legacyQuestions = JSON.parse(localStorage.getItem(LEGACY_KEY.QUESTIONS) || JSON.stringify(sampleQuestions));
-    if ((await db.questions.count()) === 0) {
-      for (const question of legacyQuestions) {
-        await db.questions.add({
-          id: question.id, // keep legacy id if present
-          deck: question.deck,
-          type: question.type,
-          prompt: question.prompt,
-          answer: question.answer,
-          keywords: question.keywords || [],
-          synonyms: question.synonyms || [],
-          explain: question.explain || '',
-          tags: [],
-          created: new Date()
-        });
-      }
-    }
+		// Migrate decks data
+		const legacyDecksRaw = localStorage.getItem(LEGACY_KEY.DECKS);
+		const deckIdMap = {};
+		if (legacyDecksRaw && (await db.decks.count()) === 0) {
+			const legacyDecks = JSON.parse(legacyDecksRaw);
+			for (const deck of legacyDecks) {
+				const newId = await db.decks.add({ name: deck.name, created: new Date() });
+				deckIdMap[deck.id] = newId;
+			}
+		}
 
-    // Migrate review data
-    const legacyReview = JSON.parse(localStorage.getItem(LEGACY_KEY.REVIEW) || '{}');
-    if ((await db.review.count()) === 0) {
-      for (const [questionId, reviewData] of Object.entries(legacyReview)) {
-        await db.review.add({
-          questionId: parseInt(questionId),
-          ease: reviewData.ease || 2.5,
-          interval: reviewData.interval || 0,
-          due: reviewData.due || todayStr(),
-          count: reviewData.count || 0,
-          correct: reviewData.correct || 0,
-          created: new Date(),
-          updated: new Date()
-        });
-      }
-    }
+		// Migrate questions data
+		const legacyQuestionsRaw = localStorage.getItem(LEGACY_KEY.QUESTIONS);
+		if (legacyQuestionsRaw && (await db.questions.count()) === 0) {
+			const legacyQuestions = JSON.parse(legacyQuestionsRaw);
+      let miscDeckId = null;
+			for (const question of legacyQuestions) {
+        let deckId = deckIdMap[question.deck];
+        if (!deckId) {
+            if (miscDeckId === null) {
+                const miscDeck = await db.decks.where('name').equalsIgnoreCase('Miscellaneous').first();
+                miscDeckId = miscDeck ? miscDeck.id : await db.decks.add({ name: 'Miscellaneous', created: new Date() });
+            }
+            deckId = miscDeckId;
+        }
 
-    // Clear localStorage after successful migration
-    localStorage.removeItem(LEGACY_KEY.PROFILE);
-    localStorage.removeItem(LEGACY_KEY.DECKS);
-    localStorage.removeItem(LEGACY_KEY.QUESTIONS);
-    localStorage.removeItem(LEGACY_KEY.REVIEW);
-    localStorage.removeItem(LEGACY_KEY.LAST);
-    
-    await setSchemaVersion(APP_SCHEMA_VERSION);
-    console.log('Migration completed successfully to meta v' + APP_SCHEMA_VERSION);
-    showToast('데이터 저장소가 준비되었습니다', 'success');
-    
-  } catch (error) {
-    console.error('Migration failed:', error);
-    showToast('데이터 마이그레이션 중 오류가 발생했습니다', 'danger');
-  }
+				await db.questions.add({
+					deck: deckId,
+					type: question.type,
+					prompt: question.prompt,
+					answer: question.answer,
+					keywords: question.keywords || [],
+					synonyms: question.synonyms || [],
+					explain: question.explain || '',
+					tags: [],
+					created: new Date()
+				});
+			}
+		}
+
+		// Clear localStorage after successful migration
+		Object.values(LEGACY_KEY).forEach(k => localStorage.removeItem(k));
+
+		await setSchemaVersion(APP_SCHEMA_VERSION);
+		console.log('Migration completed successfully to meta v' + APP_SCHEMA_VERSION);
+		showToast('데이터 저장소가 준비되었습니다', 'success');
+
+	} catch (error) {
+		console.error('Migration failed:', error);
+		showToast('데이터 마이그레이션 중 오류가 발생했습니다', 'danger');
+	}
 }
 
 // 기본 덱
@@ -244,7 +239,7 @@ const DataStore = {
   // Profile operations
   async getProfile() {
     const profile = await db.profile.toCollection().first();
-    return profile || {xp: 0, streak: 0, lastStudy: null};
+    return profile || {};
   },
 
   async setProfile(profileData) {
@@ -265,9 +260,9 @@ const DataStore = {
   },
 
   // Decks operations
-  async getDecks() {
+    async getDecks() {
     const decks = await db.decks.orderBy('name').toArray();
-    return decks.length > 0 ? decks : defaultDecks.map(d => ({...d, created: new Date()}));
+    return decks;
   },
 
   async addDeck(deck) {
@@ -278,14 +273,13 @@ const DataStore = {
   },
 
   async deleteDeck(deckId) {
-    const key = (typeof deckId === 'string' && /^\d+$/.test(deckId)) ? Number(deckId) : deckId;
-    await db.decks.where('id').equals(key).delete();
+    await db.decks.delete(deckId);
   },
 
   // Questions operations
   async getQuestions() {
     const questions = await db.questions.toArray();
-    return questions.length > 0 ? questions : sampleQuestions;
+    return questions;
   },
 
   async addQuestion(question) {
@@ -363,6 +357,50 @@ const DataStore = {
 
   async getDueReviews(date = todayStr()) {
     return await db.review.where('due').belowOrEqual(date).toArray();
+  },
+
+  // Notes operations
+  async getNotes() {
+    return await db.notes.toArray();
+  },
+
+  async getNote(id) {
+    return await db.notes.get(id);
+  },
+
+  async addNote(note) {
+    return await db.notes.add(note);
+  },
+
+  async updateNote(id, updates) {
+    return await db.notes.update(id, updates);
+  },
+
+  async deleteNote(id) {
+    await db.transaction('rw', db.notes, db.note_items, async () => {
+      await db.note_items.where('noteId').equals(id).delete();
+      await db.notes.delete(id);
+    });
+  },
+
+  async getNoteItems(noteId) {
+    return await db.note_items.where('noteId').equals(noteId).sortBy('order');
+  },
+
+  async addNoteItem(item) {
+    return await db.note_items.add(item);
+  },
+
+  async updateNoteItem(id, updates) {
+    return await db.note_items.update(id, updates);
+  },
+
+  async deleteNoteItem(id) {
+    return await db.note_items.delete(id);
+  },
+
+  async bulkAddNoteItems(items) {
+    return await db.note_items.bulkAdd(items);
   }
 };
 
@@ -634,7 +672,7 @@ async function showQuestion() {
   const q = session.queue[session.index];
   const qArea = document.getElementById('qArea');
   const decks = await getDecks();
-  const deckName = (decks.find(d => String(d.id) === String(q.deck)) || {}).name || q.deck;
+  const deckName = (decks.find(d => Number(d.id) === Number(q.deck)) || {}).name || 'Unknown Deck';
   
   let html = `
     <div class="badge">${deckName} · ${q.type}</div>
@@ -1134,25 +1172,30 @@ async function addDeck() {
  await updateDeckList();
 }
 
-async function deleteDeck(id) {
- if (!confirm('이 덱을 삭제하시겠습니까? 관련 문제도 모두 삭제됩니다.')) {
-   return;
- }
- 
- // Delete deck
- await DataStore.deleteDeck(id);
- 
- // Delete all questions in this deck
- const questions = await getQuestions();
- const questionsToDelete = questions.filter(q => String(q.deck) === String(id));
- for (const question of questionsToDelete) {
-   await DataStore.deleteQuestion(question.id);
- }
- 
- showToast('덱이 삭제되었습니다', 'success');
- await updateDeckSelects();
- await updateDeckList();
- await updateQuestionList();
+async function deleteDeck(deckId) {
+	const questionsInDeck = await db.questions.where('deck').equals(deckId).count();
+	let msg = `이 덱을 삭제하시겠습니까?`;
+	if (questionsInDeck > 0) {
+		msg += ` 관련 문제 ${questionsInDeck}개도 모두 삭제됩니다.`;
+	}
+
+	if (!confirm(msg)) {
+		return;
+	}
+
+	await db.transaction('rw', db.decks, db.questions, db.review, async () => {
+		const qIds = await db.questions.where('deck').equals(deckId).primaryKeys();
+
+		if (qIds.length > 0) {
+			await db.questions.bulkDelete(qIds);
+			await db.review.where('questionId').anyOf(qIds).delete();
+		}
+
+		await DataStore.deleteDeck(deckId);
+	});
+
+	showToast('덱이 삭제되었습니다', 'success');
+	await updateAllLists();
 }
 
 async function deleteQuestion(id) {
@@ -1213,13 +1256,22 @@ function updateDueLeftUI() {
 async function updateDeckSelects() {
  const decks = await getDecks();
  const html = decks.map(d => `<option value="${d.id}">${d.name}</option>`).join('');
+ const htmlWithAll = `<option value="">전체</option>` + html;
  
  document.getElementById('deckSelect').innerHTML = html;
  document.getElementById('newDeck').innerHTML = html;
+ 
  const qd = document.getElementById('quickDeck');
  if (qd) qd.innerHTML = html;
+ 
  const qDeckFilter = document.getElementById('qDeckFilter');
- if (qDeckFilter) qDeckFilter.innerHTML = `<option value="">전체</option>` + html;
+ if (qDeckFilter) qDeckFilter.innerHTML = htmlWithAll;
+
+ const deckSelectNotes = document.getElementById('deckSelectNotes');
+ if (deckSelectNotes) deckSelectNotes.innerHTML = html;
+
+ const qNoteDeckFilter = document.getElementById('qNoteDeckFilter');
+ if (qNoteDeckFilter) qNoteDeckFilter.innerHTML = htmlWithAll;
 }
 
 async function updateDeckList() {
@@ -1235,7 +1287,7 @@ async function updateDeckList() {
          <strong>${d.name}</strong>
          <span class="badge">${count}문제</span>
        </div>
-       <button class="danger" onclick="deleteDeck('${d.id}')" style="padding:6px 12px">
+       <button class="danger" onclick="deleteDeck(${d.id})" style="padding:6px 12px">
          삭제
        </button>
      </div>
@@ -1246,26 +1298,43 @@ async function updateDeckList() {
 }
 
 async function updateQuestionList() {
- const questions = await getQuestions();
- const decks = await getDecks();
- 
- let html = '';
- questions.forEach(q => {
-  const deckName = (decks.find(d => String(d.id) === String(q.deck)) || {}).name || q.deck;
-   html += `
-     <div class="question-item">
-       <div style="flex:1">
-         <div class="badge">${deckName} · ${q.type}</div>
-         <div style="margin-top:4px">${escapeHtml(q.prompt.substring(0, 50))}...</div>
-       </div>
-       <button class="danger" onclick="deleteQuestion(${q.id})" style="padding:6px 12px">
-         삭제
-       </button>
-     </div>
-   `;
- });
- 
- document.getElementById('questionList').innerHTML = html || '<div style="text-align:center;color:var(--muted);padding:20px">문제가 없습니다</div>';
+	const search = document.getElementById('qSearch').value.toLowerCase();
+	const type = document.getElementById('qTypeFilter').value;
+	const tag = document.getElementById('qTagFilter').value.toLowerCase();
+	const deckId = document.getElementById('qDeckFilter').value;
+
+	let query = db.questions.toCollection();
+	if (deckId) query = query.where('deck').equals(Number(deckId));
+	if (type) query = query.filter(q => q.type === type);
+	if (tag) query = query.filter(q => (q.tags || []).some(t => t.toLowerCase().includes(tag)));
+	if (search) {
+		query = query.filter(q =>
+			q.prompt.toLowerCase().includes(search) ||
+			(q.answer || '').toLowerCase().includes(search) ||
+			(q.explain || '').toLowerCase().includes(search)
+		);
+	}
+
+	const [questions, decks] = await Promise.all([query.toArray(), getDecks()]);
+	const deckMap = new Map(decks.map(d => [d.id, d.name]));
+
+	let html = '';
+	questions.forEach(q => {
+		const deckName = deckMap.get(q.deck) || '알 수 없음';
+		html += `
+      <div class="question-item">
+        <div style="flex:1">
+          <div class="badge">${deckName} · ${q.type}</div>
+          <div style="margin-top:4px">${escapeHtml(q.prompt.substring(0, 50))}...</div>
+        </div>
+        <button class="danger" onclick="deleteQuestion(${q.id})" style="padding:6px 12px">
+          삭제
+        </button>
+      </div>
+    `;
+	});
+
+	document.getElementById('questionList').innerHTML = html || '<div style="text-align:center;color:var(--muted);padding:20px">문제가 없습니다</div>';
 }
 
 async function updateStats() {
@@ -1397,6 +1466,8 @@ async function exportData() {
    decks: await getDecks(),
    questions: await getQuestions(),
    review: await getReview(),
+   notes: await DataStore.getNotes(),
+   note_items: await db.note_items.toArray(),
    meta: { schemaVersion: await getSchemaVersion() }
  };
  
@@ -1411,58 +1482,58 @@ async function exportData() {
 }
 
 async function importData(event) {
- const file = event.target.files[0];
- if (!file) return;
- 
- const reader = new FileReader();
- reader.onload = async function(e) {
-   try {
-     const data = JSON.parse(e.target.result);
-     
-     if (confirm('현재 데이터를 덮어씁니다. 계속하시겠습니까?')) {
-       // Clear existing data
-       await db.delete();
-       await db.open();
-       
-       // Import new data
-       await setProfile(data.profile || {xp: 0, streak: 0});
-       
-       // Import decks
-       const decks = data.decks || defaultDecks;
-       for (const deck of decks) {
-         await DataStore.addDeck(deck);
-       }
-       
-       // Import questions
-       const questions = data.questions || [];
-       for (const question of questions) {
-         await DataStore.addQuestion(question);
-       }
-       
-      // Import review data
-      const review = data.review || {};
-      for (const [questionId, reviewData] of Object.entries(review)) {
-        await setReview(parseInt(questionId), reviewData);
-      }
+	const file = event.target.files[0];
+	if (!file) return;
 
-      // Import meta
-      if (data.meta && typeof data.meta.schemaVersion !== 'undefined') {
-        await setSchemaVersion(data.meta.schemaVersion);
-      }
-       
-       await updateHeader();
-       await updateDeckSelects();
-       await updateDeckList();
-       await updateQuestionList();
-       
-      showToast('데이터를 가져왔습니다', 'success');
-    }
-  } catch (error) {
-     console.error('Import error:', error);
-     showToast('파일을 읽을 수 없습니다', 'danger');
-   }
- };
- reader.readAsText(file);
+	const reader = new FileReader();
+	reader.onload = async function(e) {
+		try {
+			const data = JSON.parse(e.target.result);
+
+			if (!data || typeof data !== 'object') {
+				throw new Error('Invalid data format');
+			}
+
+			if (confirm('현재 데이터를 덮어씁니다. 계속하시겠습니까?')) {
+				await db.delete();
+				await db.open();
+
+				if (data.profile) await setProfile(data.profile);
+
+				if (Array.isArray(data.decks)) {
+					await db.decks.bulkAdd(data.decks);
+				}
+
+				if (Array.isArray(data.questions)) {
+					await db.questions.bulkAdd(data.questions);
+				}
+
+				if (Array.isArray(data.notes)) {
+					await db.notes.bulkAdd(data.notes);
+				}
+
+				if (Array.isArray(data.note_items)) {
+					await db.note_items.bulkAdd(data.note_items);
+				}
+
+				if (data.review) {
+          const reviews = Object.entries(data.review).map(([qid, r]) => ({...r, questionId: parseInt(qid)}));
+          if (reviews.length > 0) await db.review.bulkAdd(reviews);
+				}
+
+				if (data.meta && data.meta.schemaVersion) {
+					await setSchemaVersion(data.meta.schemaVersion);
+				}
+
+				await updateAllLists();
+				showToast('데이터를 가져왔습니다', 'success');
+			}
+		} catch (error) {
+			console.error('Import error:', error);
+			showToast(`가져오기 실패: ${error.message}`, 'danger');
+		}
+	};
+	reader.readAsText(file);
 }
 
 async function resetAll() {
@@ -1470,16 +1541,12 @@ async function resetAll() {
    return;
  }
  
- // Clear IndexedDB
- await db.delete();
- await db.open();
- 
- // Clear any remaining localStorage
- localStorage.removeItem(LEGACY_KEY.PROFILE);
- localStorage.removeItem(LEGACY_KEY.DECKS);
- localStorage.removeItem(LEGACY_KEY.QUESTIONS);
- localStorage.removeItem(LEGACY_KEY.REVIEW);
- localStorage.removeItem(LEGACY_KEY.LAST);
+	// Clear IndexedDB
+	await db.delete();
+	await db.open();
+
+	// Clear any remaining localStorage
+	Object.values(LEGACY_KEY).forEach(k => localStorage.removeItem(k));
  
  await updateHeader();
  await updateDeckSelects();
@@ -1489,44 +1556,41 @@ async function resetAll() {
  showToast('모든 데이터가 초기화되었습니다', 'success');
 }
 
-// Soft data reset: bump meta schemaVersion, refresh caches, reopen DB, and seed defaults if missing
 async function resetData() {
- try {
-   // Bump meta schema version to current app version
-   await setSchemaVersion(APP_SCHEMA_VERSION);
-   
-   // Refresh service worker cache if available
-   if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-     try { const reg = await navigator.serviceWorker.getRegistration(); await reg?.update(); } catch (_) {}
-   }
-   if ('caches' in window) {
-     try {
-       const names = await caches.keys();
-       await Promise.all(names.map(n => caches.delete(n)));
-     } catch (_) {}
-   }
-   
-   // Reopen DB
-   try { db.close(); } catch (_) {}
-   await db.open();
-   
-   // Seed defaults if empty
-   if ((await db.decks.count()) === 0) {
-     for (const d of defaultDecks) { await db.decks.add({ name: d.name, created: new Date() }); }
-   }
-   if ((await db.questions.count()) === 0) {
-     for (const q of sampleQuestions) { await db.questions.add({ ...q, created: new Date() }); }
-   }
-   
-   await updateHeader();
-   await updateDeckSelects();
-   await updateDeckList();
-   await updateQuestionList();
-   showToast('데이터 리셋 완료 (캐시/DB 갱신)', 'success');
- } catch (e) {
-   console.error('resetData error', e);
-   showToast('데이터 리셋 중 오류가 발생했습니다', 'danger');
- }
+	if (!confirm('샘플 데이터를 추가하시겠습니까? 기존 데이터는 유지됩니다.')) {
+		return;
+	}
+	try {
+		const deckCount = await db.decks.count();
+		const questionCount = await db.questions.count();
+
+		if (deckCount > 0 && questionCount > 0) {
+			showToast('이미 데이터가 존재하여 샘플을 추가하지 않았습니다.', 'info');
+			return;
+		}
+
+		const deckIdMap = {};
+		for (const d of defaultDecks) {
+			const existing = await db.decks.where('name').equalsIgnoreCase(d.name).first();
+			if (existing) {
+				deckIdMap[d.id] = existing.id;
+			} else {
+				const newId = await db.decks.add({ name: d.name, created: new Date() });
+				deckIdMap[d.id] = newId;
+			}
+		}
+
+		for (const q of sampleQuestions) {
+			const newQ = { ...q, id: undefined, deck: deckIdMap[q.deck] || null, created: new Date() };
+			await db.questions.add(newQ);
+		}
+
+		showToast('샘플 데이터가 추가되었습니다.', 'success');
+		await updateAllLists();
+	} catch (e) {
+		console.error('resetData error', e);
+		showToast('샘플 데이터 추가 중 오류 발생', 'danger');
+	}
 }
 
 async function updateSettingsPanel() {
@@ -1565,6 +1629,9 @@ async function showTab(e, tabName) {
    await updateSettingsPanel();
  } else if (tabName === 'stats') {
    await updateStats();
+ } else if (tabName === 'notes') {
+   await updateDeckSelects();
+   await loadNotes();
  }
 }
 
@@ -1844,6 +1911,337 @@ function escapeHtml(str) {
  return div.innerHTML;
 }
 
+let currentNoteId = null;
+const selectedNoteItemIds = new Set();
+
+async function loadNotes() {
+  const search = document.getElementById('qNoteSearch').value.toLowerCase();
+  const deckId = document.getElementById('qNoteDeckFilter').value;
+
+  let notes = await db.notes.orderBy('title').toArray();
+  if (deckId) {
+    notes = notes.filter(n => Number(n.deckId) === Number(deckId));
+  }
+  if (search) {
+    notes = notes.filter(n => n.title.toLowerCase().includes(search));
+  }
+
+  const listEl = document.getElementById('notesList');
+  listEl.innerHTML = notes.map(note => `
+    <div class="question-item" onclick="loadNote(${note.id})">
+      ${escapeHtml(note.title)}
+    </div>
+  `).join('') || '<div style="text-align:center;color:var(--muted);padding:20px">노트가 없습니다.</div>';
+}
+
+async function createNote() {
+  const deckId = document.getElementById('deckSelectNotes').value;
+  const title = document.getElementById('noteTitle').value.trim();
+  const source = document.getElementById('noteSource').value.trim();
+
+  if (!title) {
+    showToast('노트 제목을 입력하세요.', 'warning');
+    return;
+  }
+
+  const newNoteId = await db.notes.add({
+    deckId: Number(deckId),
+    title,
+    source,
+    created: new Date(),
+    updated: new Date(),
+  });
+
+  await loadNotes();
+  loadNote(newNoteId);
+}
+
+async function loadNote(id) {
+  currentNoteId = id;
+  selectedNoteItemIds.clear();
+
+  const note = await db.notes.get(id);
+  if (!note) {
+    // Clear editor
+    return;
+  }
+
+  document.getElementById('deckSelectNotes').value = note.deckId;
+  document.getElementById('noteTitle').value = note.title;
+  document.getElementById('noteSource').value = note.source || '';
+
+  const items = await db.note_items.where('noteId').equals(id).sortBy('ts');
+  document.getElementById('noteTextarea').value = items.map(item => item.text).join('\n');
+}
+
+async function addLine() {
+  if (!currentNoteId) return;
+  // In a real implementation, this would come from a dedicated input
+  // For now, we'll add a placeholder line.
+  const text = `새로운 줄 - ${new Date().toLocaleTimeString()}`;
+
+  await db.note_items.add({
+    noteId: currentNoteId,
+    ts: new Date().toISOString(),
+    text,
+    tags: [],
+  });
+
+  // Append to textarea and reload
+  const textarea = document.getElementById('noteTextarea');
+  textarea.value += '\n' + text;
+}
+
+function toggleSelectLine(id) {
+  if (selectedNoteItemIds.has(id)) {
+    selectedNoteItemIds.delete(id);
+  } else {
+    selectedNoteItemIds.add(id);
+  }
+  // In a real UI, re-render the line to show selection state
+}
+
+async function deleteLine(id) {
+  await db.note_items.delete(id);
+  loadNote(currentNoteId);
+}
+
+async function deleteNoteCascade(id) {
+  if (!confirm('정말로 이 노트를 삭제하시겠습니까?')) return;
+
+  await db.note_items.where('noteId').equals(id).delete();
+  await db.notes.delete(id);
+
+  currentNoteId = null;
+  // Clear editor and reload list
+  document.getElementById('deckSelectNotes').value = '';
+  document.getElementById('noteTitle').value = '';
+  document.getElementById('noteSource').value = '';
+  document.getElementById('noteTextarea').value = '';
+  await loadNotes();
+}
+
+async function saveNoteMeta() {
+  if (!currentNoteId) return;
+
+  const deckId = document.getElementById('deckSelectNotes').value;
+  const title = document.getElementById('noteTitle').value.trim();
+  const source = document.getElementById('noteSource').value.trim();
+
+  if (!title) {
+    showToast('노트 제목은 비워둘 수 없습니다.', 'warning');
+    return;
+  }
+
+  await db.notes.update(currentNoteId, {
+    deckId: Number(deckId),
+    title,
+    source,
+    updated: new Date(),
+  });
+
+  showToast('노트가 저장되었습니다.', 'success');
+  await loadNotes(); // Refresh list to show new title
+}
+
+async function noteLinesToDraftQuestions() {
+  if (!currentNoteId || selectedNoteItemIds.size === 0) {
+    showToast('변환할 노트 줄을 선택하세요.', 'warning');
+    return;
+  }
+
+  const note = await db.notes.get(currentNoteId);
+  if (!note) return;
+
+  const itemsToConvert = await db.note_items.where('id').anyOf(Array.from(selectedNoteItemIds)).toArray();
+
+  const newQuestions = itemsToConvert.map(item => ({
+    deck: note.deckId,
+    type: 'SHORT',
+    prompt: item.text,
+    answer: '',
+    explain: `노트 '${note.title}'에서 생성됨`,
+    keywords: [],
+    synonyms: [],
+    tags: ['from:note'],
+    created: new Date(),
+  }));
+
+  await db.questions.bulkAdd(newQuestions);
+
+  selectedNoteItemIds.clear();
+  showToast(`${newQuestions.length}개의 질문 초안이 생성되었습니다.`, 'success');
+  // Visually clear selection in a real implementation
+}
+
+async function exportNoteAsMarkdown() {
+  if (!currentNoteId) {
+    showToast('내보낼 노트를 선택하세요.', 'warning');
+    return;
+  }
+
+  const note = await db.notes.get(currentNoteId);
+  if (!note) return;
+
+  const items = await db.note_items.where('noteId').equals(currentNoteId).sortBy('ts');
+  const decks = await getDecks();
+  const deck = decks.find(d => d.id === note.deckId);
+
+  let markdown = `# ${note.title}\n\n`;
+  if (deck) {
+    markdown += `- Deck: ${deck.name}\n`;
+  }
+  if (note.source) {
+    markdown += `- Source: ${note.source}\n`;
+  }
+  markdown += `- Created: ${new Date(note.created).toISOString()}\n\n`;
+  markdown += `## Notes\n\n`;
+
+  markdown += items.map(item => `- [${new Date(item.ts).toLocaleString()}] ${item.text}`).join('\n');
+
+  const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${note.title}.md`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+
+// ========== 노트 관리 ==========
+let currentNote = null;
+
+async function updateNotesList() {
+  const search = document.getElementById('noteSearch').value.toLowerCase();
+  const notes = await DataStore.getNotes();
+  const decks = await getDecks();
+  const deckMap = new Map(decks.map(d => [d.id, d.name]));
+
+  const filteredNotes = notes.filter(n => n.title.toLowerCase().includes(search));
+
+  const listEl = document.getElementById('notesList');
+  listEl.innerHTML = filteredNotes.map(n => `
+    <div class="question-item" onclick="openNote(${n.id})">
+      <div>
+        <strong>${escapeHtml(n.title)}</strong>
+        <div class="badge">${deckMap.get(n.deckId) || '덱 없음'}</div>
+      </div>
+    </div>
+  `).join('') || '<div style="text-align:center;color:var(--muted);padding:20px">노트가 없습니다</div>';
+}
+
+async function addNewNote() {
+  const deckId = document.getElementById('deckSelect').value;
+  if (!deckId) {
+    showToast('노트를 추가하려면 먼저 학습 탭에서 덱을 선택하세요.', 'warning');
+    return;
+  }
+  const newNoteId = await DataStore.addNote({
+    deckId: Number(deckId),
+    title: '새 노트',
+    created: new Date(),
+    updated: new Date()
+  });
+  await updateNotesList();
+  await openNote(newNoteId);
+}
+
+async function openNote(noteId) {
+  currentNote = await DataStore.getNote(noteId);
+  if (!currentNote) return;
+
+  document.getElementById('noNoteSelected').style.display = 'none';
+  document.getElementById('noteEditor').style.display = 'block';
+
+  document.getElementById('noteTitle').textContent = currentNote.title;
+  const decks = await getDecks();
+  const deckName = (decks.find(d => d.id === currentNote.deckId) || {}).name || '알 수 없음';
+  document.getElementById('noteDeckName').textContent = deckName;
+
+  await renderNoteItems();
+}
+
+async function renderNoteItems() {
+  const items = await DataStore.getNoteItems(currentNote.id);
+  const container = document.getElementById('noteItems');
+  container.innerHTML = items.map(item => `
+    <div class="note-item" data-id="${item.id}" data-type="${item.type}">
+      <span class="note-handle">::</span>
+      <div class="note-content ${item.type}" contenteditable="true" onblur="saveNoteItem(${item.id}, this)">${escapeHtml(item.content)}</div>
+      <button class="note-delete" onclick="deleteNoteItem(${item.id})">×</button>
+    </div>
+  `).join('');
+}
+
+async function addNoteItem(type) {
+  if (!currentNote) return;
+  const items = await DataStore.getNoteItems(currentNote.id);
+  await DataStore.addNoteItem({
+    noteId: currentNote.id,
+    type: type,
+    content: '...',
+    order: items.length,
+    created: new Date(),
+    updated: new Date()
+  });
+  await renderNoteItems();
+}
+
+async function saveNoteItem(itemId, element) {
+  await DataStore.updateNoteItem(itemId, { content: element.innerText });
+}
+
+async function deleteNoteItem(itemId) {
+  await DataStore.deleteNoteItem(itemId);
+  await renderNoteItems();
+}
+
+async function deleteCurrentNote() {
+  if (!currentNote || !confirm('정말로 이 노트를 삭제하시겠습니까?')) return;
+  await DataStore.deleteNote(currentNote.id);
+  currentNote = null;
+  document.getElementById('noteEditor').style.display = 'none';
+  document.getElementById('noNoteSelected').style.display = 'block';
+  await updateNotesList();
+}
+
+async function exportNoteToMarkdown() {
+  if (!currentNote) return;
+  const items = await DataStore.getNoteItems(currentNote.id);
+  const title = document.getElementById('noteTitle').textContent;
+  let md = `# ${title}\n\n`;
+  md += items.map(item => {
+    if (item.type === 'h1') return `# ${item.content}`;
+    if (item.type === 'h2') return `## ${item.content}`;
+    if (item.type === 'code') return '```\n' + item.content + '\n```';
+    return `- ${item.content}`;
+  }).join('\n');
+
+  const blob = new Blob([md], { type: 'text/markdown' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${title}.md`;
+  a.click();
+}
+
+async function convertSelectionToQuestions() {
+  // This is a placeholder for a more complex feature.
+  showToast('선택한 노트 항목을 문제로 변환하는 기능은 곧 추가될 예정입니다.', 'info');
+}
+
+
+async function updateAllLists() {
+	await updateHeader();
+	await updateDeckSelects();
+	await updateDeckList();
+	await updateQuestionList();
+  await loadNotes();
+}
+
 // ========== PWA Service Worker ==========
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function() {
@@ -1947,3 +2345,37 @@ document.addEventListener('DOMContentLoaded', async function() {
     }
  });
 });
+
+document.addEventListener("DOMContentLoaded", () => {
+  const logo = document.querySelector(".logo");
+  if (logo) {
+    logo.style.cursor = "pointer"; // 시각적 피드백
+    logo.addEventListener("click", () => {
+      switchTab("study");
+    });
+  }
+});
+
+// [1] 기존 showTab 함수 (그대로 두기)
+
+// [2] 새로 추가
+function switchTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.style.display = 'none');
+
+  const btn = document.getElementById('tab-btn-' + tab);
+  const panel = document.getElementById('tab-' + tab) || document.getElementById(tab + 'Tab');
+  if (btn) btn.classList.add('active');
+  if (panel) panel.style.display = 'block';
+
+  if (tab === 'manage') {
+    updateDeckList(); updateQuestionList(); updateSettingsPanel();
+  } else if (tab === 'stats') {
+    updateStats();
+  } else if (tab === 'notes') {
+    updateDeckSelects(); loadNotes();
+  }
+}
+
+// 전역 바인딩
+window.switchTab = switchTab;
