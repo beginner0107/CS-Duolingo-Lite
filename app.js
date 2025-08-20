@@ -1646,7 +1646,8 @@ document.addEventListener('DOMContentLoaded', async function() {
    // Initialize UI
    await updateHeader();
   await updateDeckSelects();
-   setupGuidedImport();
+  // Optional: guided import setup (guard if not defined)
+  try { if (typeof setupGuidedImport === 'function') setupGuidedImport(); } catch (_) {}
    
   console.log('Application initialized successfully');
   try { runSM2PreviewTests(); } catch (_) {}
