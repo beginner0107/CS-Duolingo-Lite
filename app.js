@@ -1583,10 +1583,250 @@ function showToast(message, type = 'info') {
  }, 3000);
 }
 
-// Defensive stub: avoid ReferenceError if guided import helpers are not yet defined
-// This keeps initialization from failing while the feature is optional.
-if (typeof setupGuidedImport === 'undefined') {
-  function setupGuidedImport() {}
+// ========== Guided Import (CSV/TSV + 미리보기/되돌리기) ==========
+function setupGuidedImport() {
+  const drop = document.getElementById('importDrop');
+  const fileInput = document.getElementById('importDelimitedFile');
+  if (!drop || !fileInput) return; // UI가 없으면 조용히 종료
+  // 클릭으로 파일 선택
+  drop.addEventListener('click', () => fileInput.click());
+  // 드래그 스타일
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.style.background = 'rgba(99,102,241,0.08)'; });
+  drop.addEventListener('dragleave', () => { drop.style.background = ''; });
+  drop.addEventListener('drop', (e) => { e.preventDefault(); drop.style.background = ''; handleDelimitedFile(e.dataTransfer.files[0]); });
+  // 파일 선택 처리
+  fileInput.addEventListener('change', (e) => handleDelimitedFile(e.target.files[0]));
+}
+
+function downloadImportTemplate() {
+  const headers = ['type','deck','prompt','answer','synonyms','keywords','keywordThreshold','explain','tags'];
+  const sample = [
+    ['OX','net','TCP는 연결 지향이다.','true','','','','3-way handshake 관련','net,group:transport'],
+    ['SHORT','os','ACID 중 A는?','Atomicity','원자성, atomic','','','트랜잭션 성질',''],
+    ['KEYWORD','db','인덱스의 장점을 설명하시오','','','검색|조회, 성능, B-Tree','','선택사항','group:index']
+  ];
+  const toCsvCell = (v) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  const csv = headers.join(',') + '\n' + sample.map(r => r.map(toCsvCell).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'cs-study-template.csv'; a.click();
+}
+
+async function handleDelimitedFile(file) {
+  if (!file) return;
+  const text = await file.text();
+  processDelimitedText(text);
+}
+
+function detectDelimiter(text) {
+  return text.indexOf('\t') !== -1 ? '\t' : ',';
+}
+
+function parseDelimited(text, delimiter) {
+  // 간단 파서: TSV는 분리, CSV는 따옴표 처리(기본 수준)
+  const lines = text.replace(/\r\n?/g, '\n').split('\n').filter(l => l.trim() !== '');
+  if (delimiter === '\t') return lines.map(l => l.split('\t'));
+  const rows = [];
+  for (const line of lines) {
+    const cells = [];
+    let cur = '', inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (inQ) {
+        if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+        else if (ch === '"') inQ = false;
+        else cur += ch;
+      } else {
+        if (ch === '"') inQ = true;
+        else if (ch === ',') { cells.push(cur.trim()); cur = ''; }
+        else cur += ch;
+      }
+    }
+    cells.push(cur.trim());
+    rows.push(cells);
+  }
+  return rows;
+}
+
+let importPreviewRows = [];
+
+function processDelimitedText(text) {
+  const delimiter = detectDelimiter(text);
+  const rows = parseDelimited(text, delimiter);
+  if (rows.length === 0) return;
+  const headers = rows[0].map(h => h.trim());
+  const body = rows.slice(1);
+  const idx = (name) => headers.indexOf(name);
+  importPreviewRows = body.map(cols => validateImportRow({
+    type: (cols[idx('type')] || '').trim(),
+    deck: (cols[idx('deck')] || '').trim(),
+    prompt: (cols[idx('prompt')] || '').trim(),
+    answer: (cols[idx('answer')] || '').trim(),
+    synonyms: ((cols[idx('synonyms')] || '').split(',').map(s => s.trim()).filter(Boolean)),
+    keywords: ((cols[idx('keywords')] || '').split(',').map(s => s.trim()).filter(Boolean)),
+    keywordThreshold: (cols[idx('keywordThreshold')] || '').trim(),
+    explain: (cols[idx('explain')] || ''),
+    tags: ((cols[idx('tags')] || '').split(',').map(s => s.trim()).filter(Boolean))
+  }));
+  renderImportPreview();
+}
+
+function validateImportRow(row) {
+  const errors = [];
+  const t = (row.type || '').toUpperCase();
+  if (!['OX', 'SHORT', 'KEYWORD'].includes(t)) errors.push('유형 오류');
+  if (!row.deck) errors.push('덱 누락');
+  if (!row.prompt) errors.push('문제 누락');
+  if (t === 'OX') {
+    if (!['true', 'false', 'TRUE', 'FALSE'].includes(String(row.answer))) errors.push('OX 정답 오류');
+  } else if (t === 'SHORT') {
+    if (!row.answer) errors.push('정답 누락');
+  } else if (t === 'KEYWORD') {
+    if (!row.keywords || row.keywords.length === 0) errors.push('키워드 누락');
+  }
+  return { ...row, type: t, error: errors.join(', ') };
+}
+
+function renderImportPreview() {
+  const sum = document.getElementById('importSummary');
+  const prev = document.getElementById('importPreview');
+  const btn = document.getElementById('importValidBtn');
+  const valid = importPreviewRows.filter(r => !r.error);
+  const invalid = importPreviewRows.length - valid.length;
+  if (sum) sum.textContent = `총 ${importPreviewRows.length}행 · 유효 ${valid.length} · 오류 ${invalid}`;
+  const rows = importPreviewRows.slice(0, 10);
+  let html = '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse">';
+  html += '<tr><th style="text-align:left;padding:6px">type</th><th>deck</th><th>prompt</th><th>answer</th><th>synonyms</th><th>keywords</th><th>thr</th><th>tags</th><th>오류</th></tr>';
+  rows.forEach((r) => {
+    html += `<tr>
+      <td style="padding:6px">${r.type}</td>
+      <td contenteditable style="padding:6px">${escapeHtml(r.deck)}</td>
+      <td contenteditable style="padding:6px">${escapeHtml(r.prompt)}</td>
+      <td contenteditable style="padding:6px">${escapeHtml(r.answer||'')}</td>
+      <td contenteditable style="padding:6px">${escapeHtml((r.synonyms||[]).join(', '))}</td>
+      <td contenteditable style="padding:6px">${escapeHtml((r.keywords||[]).join(', '))}</td>
+      <td contenteditable style="padding:6px">${escapeHtml(r.keywordThreshold||'')}</td>
+      <td contenteditable style="padding:6px">${escapeHtml((r.tags||[]).join(', '))}</td>
+      <td style="padding:6px;color:${r.error?'#ef4444':'#22c55e'}">${r.error||'OK'}</td>
+    </tr>`;
+  });
+  html += '</table></div>';
+  if (prev) prev.innerHTML = html;
+  if (btn) btn.disabled = valid.length === 0;
+}
+
+async function importValidPreviewRows() {
+  // 미리보기 편집내용 동기화 (첫 10행)
+  const prev = document.getElementById('importPreview');
+  if (prev) {
+    const trs = prev.querySelectorAll('tr');
+    for (let i = 1; i < trs.length; i++) {
+      const idx = i - 1;
+      if (!importPreviewRows[idx]) continue;
+      const tds = trs[i].querySelectorAll('td');
+      importPreviewRows[idx].deck = tds[1].textContent.trim();
+      importPreviewRows[idx].prompt = tds[2].textContent.trim();
+      importPreviewRows[idx].answer = tds[3].textContent.trim();
+      importPreviewRows[idx].synonyms = tds[4].textContent.split(',').map(s=>s.trim()).filter(Boolean);
+      importPreviewRows[idx].keywords = tds[5].textContent.split(',').map(s=>s.trim()).filter(Boolean);
+      importPreviewRows[idx].keywordThreshold = tds[6].textContent.trim();
+      importPreviewRows[idx].tags = tds[7].textContent.split(',').map(s=>s.trim()).filter(Boolean);
+      const validated = validateImportRow(importPreviewRows[idx]);
+      importPreviewRows[idx] = validated;
+    }
+  }
+  const valid = importPreviewRows.filter(r => !r.error);
+  if (valid.length === 0) { showToast('가져올 유효한 항목이 없습니다', 'warning'); return; }
+  const decks = await getDecks();
+  const nameToId = {}; decks.forEach(d => nameToId[(d.name||'').toLowerCase()] = d.id);
+  const createdIds = [];
+  for (const r of valid) {
+    let deckId = nameToId[(r.deck||'').toLowerCase()];
+    if (deckId === undefined) {
+      await DataStore.addDeck({ name: r.deck });
+      const nd = await getDecks();
+      const found = nd.find(d => (d.name||'').toLowerCase() === (r.deck||'').toLowerCase());
+      deckId = found?.id;
+      nameToId[(r.deck||'').toLowerCase()] = deckId;
+    }
+    const q = { deck: deckId, type: r.type, prompt: r.prompt, explain: r.explain||'', tags: r.tags||[] };
+    if (r.type === 'OX') { q.answer = String(r.answer).toLowerCase() === 'true' ? 'true' : 'false'; }
+    else if (r.type === 'SHORT') { q.answer = r.answer; if (r.synonyms?.length) q.synonyms = r.synonyms; q.shortFuzzy = true; }
+    else if (r.type === 'KEYWORD') { q.keywords = r.keywords; if (r.keywordThreshold) q.keywordThreshold = r.keywordThreshold; }
+    const id = await DataStore.addQuestion(q);
+    createdIds.push(id);
+  }
+  window.lastImport = { questionIds: createdIds };
+  const undoBtn = document.getElementById('undoImportBtn'); if (undoBtn) undoBtn.disabled = createdIds.length === 0;
+  showToast(`${createdIds.length}개 항목을 가져왔습니다`, 'success');
+  await updateQuestionList();
+}
+
+function undoLastImport() {
+  const last = window.lastImport;
+  if (!last || !last.questionIds || last.questionIds.length === 0) { showToast('되돌릴 가져오기가 없습니다', 'warning'); return; }
+  Promise.all(last.questionIds.map(id => DataStore.deleteQuestion(id))).then(async () => {
+    window.lastImport = null;
+    const undoBtn = document.getElementById('undoImportBtn'); if (undoBtn) undoBtn.disabled = true;
+    await updateQuestionList();
+    showToast('마지막 가져오기를 되돌렸습니다', 'success');
+  });
+}
+
+function parseNaturalLanguage() {
+  const text = document.getElementById('nlPaste')?.value || '';
+  if (!text.trim()) { showToast('내용을 입력하세요', 'warning'); return; }
+  const lines = text.replace(/\r\n?/g, '\n').split('\n').map(l => l.replace(/^[-•\s]+/, '').trim()).filter(Boolean);
+  importPreviewRows = lines.map(line => {
+    const parts = line.split(',').map(s => s.trim()).filter(Boolean);
+    const prompt = parts[0];
+    const keywords = parts.slice(1);
+    return validateImportRow({ type: 'KEYWORD', deck: '', prompt, answer: '', synonyms: [], keywords, keywordThreshold: '', explain: '', tags: [] });
+  });
+  renderImportPreview();
+}
+
+// ========== 빠른 추가 (덱별) ==========
+function updateQuickAddFields() {
+  const type = document.getElementById('quickType')?.value || 'OX';
+  const ans = document.getElementById('quickAnswerWrap');
+  const syn = document.getElementById('quickSynWrap');
+  const key = document.getElementById('quickKeyWrap');
+  if (!ans || !syn || !key) return;
+  if (type === 'OX') { ans.style.display = 'block'; syn.style.display = 'none'; key.style.display = 'none'; }
+  else if (type === 'SHORT') { ans.style.display = 'block'; syn.style.display = 'block'; key.style.display = 'none'; }
+  else { ans.style.display = 'none'; syn.style.display = 'none'; key.style.display = 'block'; }
+}
+
+async function quickAdd() {
+  const deck = document.getElementById('quickDeck')?.value;
+  const type = document.getElementById('quickType')?.value || 'OX';
+  const prompt = (document.getElementById('quickPrompt')?.value || '').trim();
+  if (!deck) { showToast('덱을 선택하세요', 'warning'); return; }
+  if (!prompt) { showToast('문제를 입력하세요', 'warning'); return; }
+  const q = { deck, type, prompt };
+  if (type === 'OX' || type === 'SHORT') {
+    const ans = (document.getElementById('quickAnswer')?.value || '').trim();
+    if (!ans) { showToast('정답을 입력하세요', 'warning'); return; }
+    q.answer = ans;
+    if (type === 'SHORT') {
+      const syn = (document.getElementById('quickSynonyms')?.value || '').split(',').map(s => s.trim()).filter(Boolean);
+      if (syn.length) q.synonyms = syn;
+      q.shortFuzzy = !!document.getElementById('quickFuzzy')?.checked;
+    }
+  } else if (type === 'KEYWORD') {
+    const kw = (document.getElementById('quickKeywords')?.value || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (!kw.length) { showToast('키워드를 입력하세요', 'warning'); return; }
+    q.keywords = kw;
+    const thr = (document.getElementById('quickKeyThr')?.value || '').trim(); if (thr) q.keywordThreshold = thr;
+  }
+  await DataStore.addQuestion(q);
+  // clear inputs
+  const ids = ['quickPrompt','quickAnswer','quickSynonyms','quickKeywords','quickKeyThr'];
+  ids.forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  showToast('추가되었습니다', 'success');
+  await updateQuestionList();
 }
 
 function shuffle(arr) {
