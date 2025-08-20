@@ -1339,7 +1339,6 @@ async function updateStats() {
  document.getElementById('achievementContent').innerHTML = achievementHtml;
  
  // 복습 일정
- const today = todayStr();
  const todayDate = new Date(today);
  const upcoming = Object.entries(review)
    .filter(([id, r]) => new Date(r.due) > todayDate)
