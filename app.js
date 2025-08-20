@@ -1583,6 +1583,12 @@ function showToast(message, type = 'info') {
  }, 3000);
 }
 
+// Defensive stub: avoid ReferenceError if guided import helpers are not yet defined
+// This keeps initialization from failing while the feature is optional.
+if (typeof setupGuidedImport === 'undefined') {
+  function setupGuidedImport() {}
+}
+
 function shuffle(arr) {
  const copy = [...arr];
  for (let i = copy.length - 1; i > 0; i--) {
