@@ -283,9 +283,14 @@ const DataStore = {
   },
 
   async addQuestion(question) {
+    // Get current max sortOrder
+    const maxOrder = await db.questions.orderBy('sortOrder').reverse().first();
+    const nextOrder = (maxOrder?.sortOrder ?? 0) + 1;
+    
     return await db.questions.add({
       ...question,
-      created: new Date()
+      created: new Date(),
+      sortOrder: nextOrder
     });
   },
 
@@ -541,6 +546,9 @@ async function startSession() {
   const deckId = document.getElementById('deckSelect').value;
   const count = parseInt(document.getElementById('questionCount').value);
   
+  // Show loading skeleton
+  if (typeof showQuestionSkeleton === 'function') showQuestionSkeleton();
+  
   const questions = await getQuestions();
   const review = await getReview();
   const today = todayStr();
@@ -677,30 +685,62 @@ async function showQuestion() {
   let html = `
     <div class="badge">${deckName} · ${q.type}</div>
     <div class="prompt-box">${escapeHtml(q.prompt)}</div>
+    <div style="margin-top:16px">
+      <button id="revealBtn" onclick="revealAnswer()" aria-expanded="false">
+        <span>🔍</span> Reveal Answer
+      </button>
+    </div>
+  `;
+  
+  // Hidden answer section
+  html += `
+    <div id="answerSection" style="display:none" aria-hidden="true">
+      <div style="margin-top:16px">
   `;
   
   if (q.type === 'OX') {
     html += `
-      <div class="grid grid-2">
-        <button class="success" onclick="submitAnswer('true')">⭕ True</button>
-        <button class="danger" onclick="submitAnswer('false')">❌ False</button>
-      </div>
+        <div class="grid grid-2">
+          <button class="success" onclick="submitAnswer('true')">⭕ True</button>
+          <button class="danger" onclick="submitAnswer('false')">❌ False</button>
+        </div>
     `;
   } else {
     html += `
-      <textarea id="userAnswer" placeholder="답을 입력하세요..." autofocus></textarea>
-      <div style="margin-top:16px">
-        <button onclick="submitAnswer(document.getElementById('userAnswer').value)">제출</button>
-        <button class="secondary" onclick="submitAnswer('')">모르겠음</button>
-      </div>
+        <textarea id="userAnswer" placeholder="답을 입력하세요..." autofocus></textarea>
+        <div style="margin-top:16px">
+          <button onclick="submitAnswer(document.getElementById('userAnswer').value)">제출</button>
+          <button class="secondary" onclick="submitAnswer('')">모르겠음</button>
+        </div>
     `;
   }
   
-  html += '<div id="resultArea"></div>';
+  html += `
+      </div>
+    </div>
+    <div id="resultArea"></div>
+  `;
+  
   qArea.innerHTML = html;
   
-  if (q.type !== 'OX') {
-    setTimeout(() => document.getElementById('userAnswer')?.focus(), 100);
+  // Add fade-in effect
+  if (typeof hideQuestionSkeleton === 'function') hideQuestionSkeleton();
+}
+
+function revealAnswer() {
+  const revealBtn = document.getElementById('revealBtn');
+  const answerSection = document.getElementById('answerSection');
+  
+  if (revealBtn && answerSection) {
+    revealBtn.style.display = 'none';
+    answerSection.style.display = 'block';
+    answerSection.setAttribute('aria-hidden', 'false');
+    
+    // Focus textarea if present
+    const userAnswer = document.getElementById('userAnswer');
+    if (userAnswer) {
+      setTimeout(() => userAnswer.focus(), 100);
+    }
   }
 }
 
@@ -1315,14 +1355,17 @@ async function updateQuestionList() {
 		);
 	}
 
-	const [questions, decks] = await Promise.all([query.toArray(), getDecks()]);
+	const [questions, decks] = await Promise.all([query.orderBy('sortOrder').toArray(), getDecks()]);
 	const deckMap = new Map(decks.map(d => [d.id, d.name]));
 
 	let html = '';
-	questions.forEach(q => {
+	questions.forEach((q, index) => {
 		const deckName = deckMap.get(q.deck) || '알 수 없음';
 		html += `
-      <div class="question-item">
+      <div class="question-item" draggable="true" data-question-id="${q.id}" data-index="${index}"
+           ondragstart="handleDragStart(event)" ondragover="handleDragOver(event)" 
+           ondrop="handleDrop(event)" ondragend="handleDragEnd(event)">
+        <div class="drag-handle">⋮⋮</div>
         <div style="flex:1">
           <div class="badge">${deckName} · ${q.type}</div>
           <div style="margin-top:4px">${escapeHtml(q.prompt.substring(0, 50))}...</div>
@@ -1381,12 +1424,19 @@ async function updateStats() {
      <div class="stat-label">예정 항목</div>
      <div class="stat-value">오늘 ${dueToday} · 내일 ${dueTomorrow} · 이번 주 ${dueWeek}</div>
    </div>
-   <div style="margin-bottom:8px">
-     <div class="stat-label">주간 활동</div>
-     ${bars}
+   <div style="margin-bottom:16px">
+     <h3 style="font-size:16px;color:var(--muted);margin-bottom:8px">일일 복습 활동</h3>
+     <canvas id="dailyReviewChart" width="400" height="200"></canvas>
+   </div>
+   <div style="margin-bottom:16px">
+     <h3 style="font-size:16px;color:var(--muted);margin-bottom:8px">연속 학습 현황</h3>
+     <canvas id="streakChart" width="400" height="150"></canvas>
    </div>
 `;
  document.getElementById('statsContent').innerHTML = statsHtml;
+ 
+ // Initialize charts after DOM is updated
+ await initStatsCharts({ roll, dates, profile });
  
  // 성취도
  let achievementHtml = '';
@@ -2300,50 +2350,6 @@ document.addEventListener('DOMContentLoaded', async function() {
    showToast('앱 초기화 중 오류가 발생했습니다', 'danger');
  }
  
- // 엔터키 지원
- document.addEventListener('keydown', function(e) {
-   if (e.key === 'Enter' && !e.shiftKey) {
-     const userAnswer = document.getElementById('userAnswer');
-     if (userAnswer && document.activeElement === userAnswer) {
-       e.preventDefault();
-       submitAnswer(userAnswer.value);
-     }
-   }
-
-    // Global shortcuts during active session
-    const isActive = session && session.active;
-    if (!isActive) return;
-    const resultVisible = !!document.querySelector('.grade-buttons');
-
-    // Space: toggle show result / default grade (Good)
-    if (e.key === ' ' || e.code === 'Space') {
-      if (!resultVisible) {
-        const input = document.getElementById('userAnswer');
-        const val = input ? input.value : '';
-        e.preventDefault();
-        submitAnswer(val);
-      } else {
-        e.preventDefault();
-        gradeAnswer(2); // Good as default
-      }
-      return;
-    }
-
-    // 1..4: grade when result is visible (Again/Hard/Good/Easy)
-    if (resultVisible && ['1','2','3','4'].includes(e.key)) {
-      e.preventDefault();
-      gradeAnswer(parseInt(e.key, 10) - 1);
-      return;
-    }
-
-    // Esc: move to next card if result is visible
-    if (resultVisible && (e.key === 'Escape' || e.code === 'Escape')) {
-      e.preventDefault();
-      session.index++;
-      showQuestion();
-      return;
-    }
- });
 });
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -2377,5 +2383,275 @@ function switchTab(tab) {
   }
 }
 
+// ========== Theme Management ==========
+function getTheme() {
+  return localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+}
+
+function setTheme(theme) {
+  localStorage.setItem('theme', theme);
+  document.documentElement.setAttribute('data-theme', theme);
+  updateThemeIcon(theme);
+}
+
+function updateThemeIcon(theme) {
+  const icon = document.querySelector('.theme-icon');
+  if (icon) {
+    icon.textContent = theme === 'light' ? '🌙' : '☀️';
+  }
+}
+
+function toggleTheme() {
+  const current = getTheme();
+  const next = current === 'light' ? 'dark' : 'light';
+  setTheme(next);
+}
+
+function initTheme() {
+  const theme = getTheme();
+  setTheme(theme);
+}
+
+// ========== Drag & Drop for Question Reordering ==========
+let draggedElement = null;
+
+function handleDragStart(e) {
+  draggedElement = e.target;
+  e.target.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/html', e.target.outerHTML);
+}
+
+function handleDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  
+  const target = e.target.closest('.question-item');
+  if (target && target !== draggedElement) {
+    const rect = target.getBoundingClientRect();
+    const midY = rect.top + rect.height / 2;
+    
+    if (e.clientY < midY) {
+      target.classList.add('drag-over-top');
+      target.classList.remove('drag-over-bottom');
+    } else {
+      target.classList.add('drag-over-bottom');
+      target.classList.remove('drag-over-top');
+    }
+  }
+}
+
+function handleDrop(e) {
+  e.preventDefault();
+  
+  const target = e.target.closest('.question-item');
+  if (target && target !== draggedElement) {
+    const container = target.parentNode;
+    const rect = target.getBoundingClientRect();
+    const midY = rect.top + rect.height / 2;
+    
+    if (e.clientY < midY) {
+      container.insertBefore(draggedElement, target);
+    } else {
+      container.insertBefore(draggedElement, target.nextSibling);
+    }
+    
+    // Update question order in database
+    updateQuestionOrder();
+  }
+  
+  // Clean up visual indicators
+  document.querySelectorAll('.question-item').forEach(item => {
+    item.classList.remove('drag-over-top', 'drag-over-bottom');
+  });
+}
+
+function handleDragEnd(e) {
+  e.target.classList.remove('dragging');
+  draggedElement = null;
+  
+  // Clean up any remaining visual indicators
+  document.querySelectorAll('.question-item').forEach(item => {
+    item.classList.remove('drag-over-top', 'drag-over-bottom');
+  });
+}
+
+async function updateQuestionOrder() {
+  const questionItems = document.querySelectorAll('.question-item[data-question-id]');
+  const updates = [];
+  
+  questionItems.forEach((item, index) => {
+    const questionId = parseInt(item.dataset.questionId);
+    updates.push(db.questions.update(questionId, { sortOrder: index }));
+  });
+  
+  await Promise.all(updates);
+}
+
+// ========== Charts for Stats ==========
+let chartsInitialized = false;
+
+function resetChartsFlag() {
+  chartsInitialized = false;
+}
+
+async function initStatsCharts(data) {
+  // Lazy load Chart.js only when stats tab is opened
+  if (!window.Chart) {
+    // Chart.js is loaded via CDN with defer, so it might not be ready yet
+    let attempts = 0;
+    while (!window.Chart && attempts < 10) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      attempts++;
+    }
+    if (!window.Chart) {
+      console.warn('Chart.js not loaded');
+      return;
+    }
+  }
+  
+  if (chartsInitialized) return;
+  chartsInitialized = true;
+  
+  await createDailyReviewChart(data);
+  await createStreakChart(data);
+}
+
+async function createDailyReviewChart(data) {
+  const canvas = document.getElementById('dailyReviewChart');
+  if (!canvas) return;
+  
+  const { roll, dates } = data;
+  const reviewData = dates.map(date => {
+    const dayData = roll[date] || { correct: 0, total: 0 };
+    return dayData.total;
+  });
+  
+  const correctData = dates.map(date => {
+    const dayData = roll[date] || { correct: 0, total: 0 };
+    return dayData.correct;
+  });
+  
+  const labels = dates.map(date => {
+    const d = new Date(date);
+    return d.toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' });
+  });
+  
+  new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: '총 복습',
+          data: reviewData,
+          backgroundColor: 'rgba(99, 102, 241, 0.6)',
+          borderColor: 'rgba(99, 102, 241, 1)',
+          borderWidth: 1
+        },
+        {
+          label: '정답',
+          data: correctData,
+          backgroundColor: 'rgba(16, 185, 129, 0.6)',
+          borderColor: 'rgba(16, 185, 129, 1)',
+          borderWidth: 1
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          labels: { color: 'var(--fg)' }
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: 'var(--muted)' },
+          grid: { color: 'var(--border)' }
+        },
+        y: {
+          beginAtZero: true,
+          ticks: { color: 'var(--muted)' },
+          grid: { color: 'var(--border)' }
+        }
+      }
+    }
+  });
+}
+
+async function createStreakChart(data) {
+  const canvas = document.getElementById('streakChart');
+  if (!canvas) return;
+  
+  const { profile } = data;
+  const currentStreak = profile.streak || 0;
+  
+  // Generate last 14 days for streak visualization
+  const streakData = [];
+  const streakLabels = [];
+  
+  for (let i = 13; i >= 0; i--) {
+    const date = new Date();
+    date.setDate(date.getDate() - i);
+    streakLabels.push(date.toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' }));
+    
+    // Simple streak visualization: active if within current streak period
+    const streakValue = i <= currentStreak ? 1 : 0;
+    streakData.push(streakValue);
+  }
+  
+  new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels: streakLabels,
+      datasets: [{
+        label: '연속 학습',
+        data: streakData,
+        borderColor: 'rgba(244, 63, 94, 1)',
+        backgroundColor: 'rgba(244, 63, 94, 0.1)',
+        fill: true,
+        tension: 0.4,
+        pointBackgroundColor: 'rgba(244, 63, 94, 1)',
+        pointRadius: 4
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          labels: { color: 'var(--fg)' }
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: 'var(--muted)' },
+          grid: { color: 'var(--border)' }
+        },
+        y: {
+          beginAtZero: true,
+          max: 1,
+          ticks: { 
+            color: 'var(--muted)',
+            callback: function(value) {
+              return value === 1 ? '활성' : '비활성';
+            }
+          },
+          grid: { color: 'var(--border)' }
+        }
+      }
+    }
+  });
+}
+
 // 전역 바인딩
 window.switchTab = switchTab;
+window.revealAnswer = revealAnswer;
+window.toggleTheme = toggleTheme;
+window.handleDragStart = handleDragStart;
+window.handleDragOver = handleDragOver;
+window.handleDrop = handleDrop;
+window.handleDragEnd = handleDragEnd;
+window.resetChartsFlag = resetChartsFlag;

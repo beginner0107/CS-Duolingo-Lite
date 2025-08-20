@@ -7,6 +7,7 @@
   <title>CS Study App - 스마트 학습 시스템</title>
   <link rel="manifest" href="/manifest.json" />
   <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js" defer></script>
 </head>
 <body>
   <div class="container">
@@ -30,6 +31,9 @@
           <span class="stat-label">DB</span>
           <span class="stat-value" id="dbVer">v0</span>
         </div>
+        <button id="themeToggle" class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">
+          <span class="theme-icon">🌙</span>
+        </button>
       </div>
     </header>
 
@@ -361,6 +365,53 @@
   <div class="toast" id="toast" aria-live="polite"></div>
 
 <script src="https://unpkg.com/dexie@3.2.4/dist/dexie.js"></script>
+<script type="module">
+  // Import modules
+  import { migrateFromLocalStorage, showToast } from './src/modules/database.js';
+  import { runSM2PreviewTests } from './src/modules/spaced-repetition.js';
+  import { bindEvents, initServiceWorker } from './src/modules/ui-handlers.js';
+
+  // Make key functions globally available
+  import * as database from './src/modules/database.js';
+  import * as spacedRepetition from './src/modules/spaced-repetition.js';
+  import * as uiHandlers from './src/modules/ui-handlers.js';
+
+  // Expose necessary functions globally for onclick handlers
+  window.showTab = uiHandlers.showTab;
+  window.showToast = uiHandlers.showToast;
+  window.showQuestionSkeleton = uiHandlers.showQuestionSkeleton;
+  window.hideQuestionSkeleton = uiHandlers.hideQuestionSkeleton;
+
+  // Initialize theme immediately (before DOM content loaded)
+  document.addEventListener('DOMContentLoaded', function() {
+    if (typeof initTheme === 'function') initTheme();
+  });
+
+  // Initialize application
+  document.addEventListener('DOMContentLoaded', async function() {
+    try {
+      // Initialize database and run migration if needed
+      await migrateFromLocalStorage();
+      
+      // Initialize UI
+      const updateHeader = await import('./src/modules/database.js').then(m => m.updateHeader);
+      const updateDeckSelects = await import('./src/modules/database.js').then(m => m.updateDeckSelects);
+      
+      console.log('Application initialized successfully');
+      try { runSM2PreviewTests(); } catch (_) {}
+    } catch (error) {
+      console.error('Initialization error:', error);
+      showToast('앱 초기화 중 오류가 발생했습니다', 'danger');
+    }
+
+    // Bind all event handlers
+    bindEvents();
+    
+    // Initialize service worker
+    initServiceWorker();
+  });
+  
+</script>
 <script src="app.js"></script>
 </body>
 </html></body>
