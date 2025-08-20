@@ -27,6 +27,14 @@ body{
 
 .container{max-width:1200px;margin:0 auto;padding:24px}
 
+/* -------- Form Control Variables -------- */
+:root{
+  --input-bg:#0a0e1a;
+  --input-fg:var(--fg);
+  --input-border:var(--border);
+  --placeholder:var(--muted);
+}
+
 /* -------- Header / Stats -------- */
 header{
   display:flex;justify-content:space-between;align-items:center;
@@ -76,8 +84,11 @@ h2{
 
 /* -------- Form Controls -------- */
 select, input[type="text"], input[type="number"], input[type="search"], textarea{
-  background:#0a0e1a;border:1px solid var(--border);color:var(--fg);
+  background:var(--input-bg);border:1px solid var(--input-border);color:var(--input-fg);
   padding:12px;border-radius:10px;width:100%;font-family:inherit;transition:all .2s;
+}
+select::placeholder, input::placeholder, textarea::placeholder{
+  color:var(--placeholder);
 }
 select:focus, input:focus, textarea:focus{
   outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(99,102,241,.18);
@@ -110,7 +121,7 @@ button.warning{background:var(--warning)}
 
 /* -------- Prompt / Result -------- */
 .prompt-box{
-  background:#0a0e1a;border:1px solid var(--border);border-radius:12px;
+  background:var(--input-bg);border:1px solid var(--input-border);border-radius:12px;
   padding:20px;margin:16px 0;font-size:18px;line-height:1.6;
 }
 .result{padding:16px;border-radius:12px;margin-top:16px;animation:slideIn .3s ease}
@@ -133,7 +144,7 @@ button.warning{background:var(--warning)}
   border-radius:12px;padding:8px;
 }
 .question-item{
-  padding:12px;border-radius:8px;margin-bottom:8px;background:#0a0e1a;
+  padding:12px;border-radius:8px;margin-bottom:8px;background:var(--input-bg);
   display:flex;justify-content:space-between;align-items:center;transition:all .2s;
 }
 .question-item:hover{background:var(--card-hover)}
@@ -184,7 +195,7 @@ button.warning{background:var(--warning)}
 .note-item{
   display:flex;justify-content:space-between;align-items:center;
   padding:10px 12px;border-radius:10px;transition:.15s;
-  background:#0a0e1a;border:1px solid transparent;margin-bottom:6px;
+  background:var(--input-bg);border:1px solid transparent;margin-bottom:6px;
 }
 .note-item:hover{background:var(--card-hover)}
 .note-item.active{border-color:var(--primary)}
@@ -203,7 +214,7 @@ button.warning{background:var(--warning)}
   padding:8px;max-height:420px;overflow:auto;
 }
 .note-line{
-  display:flex;align-items:center;gap:10px;background:#0a0e1a;
+  display:flex;align-items:center;gap:10px;background:var(--input-bg);
   border-radius:8px;padding:10px 12px;margin-bottom:6px;
 }
 .note-line.selected{outline:2px solid var(--primary)}
@@ -300,6 +311,10 @@ button.warning{background:var(--warning)}
   --border:#e2e8f0;
   --success-bg:rgba(16,185,129,.08);
   --danger-bg:rgba(244,63,94,.08);
+  --input-bg:#ffffff;
+  --input-fg:#1e293b;
+  --input-border:#cbd5e1;
+  --placeholder:#94a3b8;
 }
 
 :root[data-theme="light"] body{
