@@ -238,3 +238,102 @@ button.warning{background:var(--warning)}
 .logo:hover {
   opacity: 0.8;
 }
+
+/* -------- Loading & Transitions -------- */
+.fade-in{
+  opacity:0;
+  animation:fadeIn 0.3s ease-out forwards;
+}
+
+@keyframes fadeIn{
+  to{opacity:1}
+}
+
+.skeleton-line{
+  background:linear-gradient(90deg,var(--border) 25%,var(--card-hover) 50%,var(--border) 75%);
+  background-size:200% 100%;
+  animation:skeleton 1.5s infinite;
+  border-radius:4px;
+  height:1em;
+  margin:0.5em 0;
+}
+
+@keyframes skeleton{
+  0%{background-position:200% 0}
+  100%{background-position:-200% 0}
+}
+
+.tab-content{
+  transition:opacity 0.2s ease-out;
+}
+
+/* -------- Theme Toggle -------- */
+.theme-toggle{
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:8px;
+  color:var(--fg);
+  cursor:pointer;
+  transition:all 0.2s;
+}
+
+.theme-toggle:hover{
+  background:var(--card-hover);
+}
+
+.theme-icon{
+  font-size:16px;
+}
+
+/* -------- Light Theme Overrides -------- */
+:root[data-theme="light"]{
+  --bg:#ffffff;
+  --card:#f8fafc;
+  --card-hover:#f1f5f9;
+  --muted:#64748b;
+  --fg:#1e293b;
+  --accent:#10b981;
+  --danger:#f43f5e;
+  --primary:#6366f1;
+  --warning:#f59e0b;
+  --border:#e2e8f0;
+  --success-bg:rgba(16,185,129,.08);
+  --danger-bg:rgba(244,63,94,.08);
+}
+
+:root[data-theme="light"] body{
+  background:linear-gradient(135deg,#f8fafc,#ffffff);
+}
+
+/* -------- Drag & Drop -------- */
+.drag-handle{
+  color:var(--muted);
+  cursor:grab;
+  padding:0 8px;
+  user-select:none;
+  align-self:center;
+}
+
+.drag-handle:active{
+  cursor:grabbing;
+}
+
+.question-item{
+  display:flex;
+  align-items:center;
+  transition:all 0.2s;
+}
+
+.question-item.dragging{
+  opacity:0.5;
+  transform:rotate(5deg);
+}
+
+.question-item.drag-over-top{
+  border-top:2px solid var(--accent);
+}
+
+.question-item.drag-over-bottom{
+  border-bottom:2px solid var(--accent);
+}
