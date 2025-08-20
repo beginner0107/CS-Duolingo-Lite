@@ -1,0 +1,25 @@
+{
+  "name": "CS Study App - 스마트 학습 시스템",
+  "short_name": "CS Study",
+  "description": "Spaced repetition learning app for computer science topics",
+  "start_url": "/cs-duolingo-lite.html",
+  "display": "standalone",
+  "background_color": "#0a0e1a",
+  "theme_color": "#6366f1",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "/icons/app-icon-192.svg", "sizes": "192x192", "type": "image/svg+xml", "purpose": "any maskable" },
+    { "src": "/icons/app-icon-512.svg", "sizes": "512x512", "type": "image/svg+xml", "purpose": "any maskable" },
+    { "src": "/icons/app-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icons/app-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "categories": ["education", "productivity"],
+  "screenshots": [
+    {
+      "src": "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzc1IiBoZWlnaHQ9IjY2NyIgdmlld0JveD0iMCAwIDM3NSA2NjciIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIzNzUiIGhlaWdodD0iNjY3IiByeD0iMjQiIGZpbGw9IiMwYTBlMWEiLz4KPHRleHQgeD0iMjAiIHk9IjQwIiBmaWxsPSIjZTJlOGYwIiBmb250LWZhbWlseT0ic3lzdGVtLXVpIiBmb250LXNpemU9IjE4IiBmb250LXdlaWdodD0iYm9sZCI+8J+ngCBDUyBTdHVkeSBBcHA8L3RleHQ+Cjx0ZXh0IHg9IjIwIiB5PSI4MCIgZmlsbD0iIzY0NzQ4YiIgZm9udC1mYW1pbHk9InN5c3RlbS11aSIgZm9udC1zaXplPSIxNCIPU21hcnQgU3BhY2VkIFJlcGV0aXRpb24gTGVhcm5pbmc8L3RleHQ+CjwvU3ZnPgo=",
+      "sizes": "375x667",
+      "type": "image/svg+xml",
+      "form_factor": "narrow"
+    }
+  ]
+}

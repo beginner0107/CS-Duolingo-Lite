@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>오프라인 - CS Study App</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { margin:0; font-family: -apple-system, system-ui, Segoe UI, Roboto, 'Noto Sans KR', sans-serif; background:#0a0e1a; color:#e2e8f0; display:grid; place-items:center; min-height:100vh; }
+    .card { background:#11162a; border:1px solid #1f2742; border-radius:12px; padding:24px; max-width:520px; text-align:center; box-shadow: 0 8px 30px rgba(0,0,0,.25); }
+    h1 { margin:0 0 8px; font-size:22px; }
+    p { margin:0 0 12px; color:#94a3b8; }
+    .actions { display:flex; gap:12px; justify-content:center; margin-top:16px; }
+    a, button { background:#1f2742; color:#e2e8f0; border:none; padding:10px 14px; border-radius:8px; text-decoration:none; cursor:pointer; }
+    small { color:#64748b; }
+  </style>
+  <link rel="manifest" href="/manifest.json" />
+</head>
+<body>
+  <div class="card">
+    <h1>오프라인 상태입니다</h1>
+    <p>네트워크 연결이 없어 최신 데이터를 불러올 수 없습니다.</p>
+    <p>저장된 콘텐츠는 계속 이용할 수 있습니다.</p>
+    <div class="actions">
+      <a href="/cs-duolingo-lite.html">최근 덱으로 학습</a>
+      <a href="/cs-duolingo-lite.html">앱 열기</a>
+      <button onclick="location.reload()">다시 시도</button>
+    </div>
+    <small>연결 시 자동으로 최신 상태가 반영됩니다.</small>
+  </div>
+</body>
+</html>

@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>CS Study App - 스마트 학습 시스템</title>
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo">🧠 CS Study App</div>
+      <div class="stats">
+        <div class="stat-card">
+          <span class="stat-label">XP</span>
+          <span class="stat-value" id="xp">0</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Streak</span>
+          <span class="stat-value" id="streak">0</span>
+          <span>🔥</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">오늘 복습</span>
+          <span class="stat-value" id="dueCount">0</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">DB</span>
+          <span class="stat-value" id="dbVer">v0</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="tabs">
+      <button class="tab active" onclick="showTab(event, 'study')">📚 학습</button>
+      <button class="tab" onclick="showTab(event, 'add')">➕ 문제 추가</button>
+      <button class="tab" onclick="showTab(event, 'manage')">⚙️ 관리</button>
+      <button class="tab" onclick="showTab(event, 'stats')">📊 통계</button>
+    </div>
+
+    <!-- 학습 탭 -->
+    <div id="studyTab" class="tab-content">
+      <div class="grid grid-2">
+        <div class="card">
+          <h2>📖 세션 설정</h2>
+          <div class="grid">
+            <div>
+              <label style="color:var(--muted);font-size:14px">덱 선택</label>
+              <select id="deckSelect"></select>
+            </div>
+            <div>
+              <label style="color:var(--muted);font-size:14px">문제 수</label>
+              <select id="questionCount">
+                <option value="5">5문제</option>
+                <option value="10">10문제</option>
+                <option value="15">15문제</option>
+                <option value="20">20문제</option>
+              </select>
+            </div>
+            <button id="startBtn" onclick="startSession()">
+              <span>🚀</span> 학습 시작
+            </button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>📈 진행 상황</h2>
+          <div id="dailyGoalPanel" class="daily-goal-panel">
+            <div>오늘의 목표</div>
+            <div class="goal-progress" id="goalProgressText">0/25</div>
+            <div class="goal-bar">
+              <div class="goal-fill" id="goalProgressBar" style="width:0%"></div>
+            </div>
+            <div class="goal-progress" style="margin-top:6px">오늘 남은 복습: <span id="dueLeft">0/0</span></div>
+            <div style="font-size:12px;opacity:0.9">복습 20개 + 새 문제 5개</div>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="progressBar" style="width:0%"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between">
+            <span class="badge">진행: <strong id="prog">0/0</strong></span>
+            <span class="badge success">정답: <strong id="okCnt">0</strong></span>
+            <span class="badge danger">오답: <strong id="ngCnt">0</strong></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>💡 문제</h2>
+        <div id="qArea">
+          <div style="text-align:center;padding:40px;color:var(--muted)">
+            덱을 선택하고 학습을 시작하세요! 
+            <br><br>
+            💡 Tip: 문제를 직접 추가하려면 '문제 추가' 탭을 사용하세요.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 문제 추가 탭 -->
+    <div id="addTab" class="tab-content" style="display:none">
+      <div class="card">
+        <h2>✏️ 새 문제 만들기</h2>
+        <div class="grid">
+          <div class="grid grid-2">
+            <div>
+              <label style="color:var(--muted);font-size:14px">덱 선택</label>
+              <select id="newDeck"></select>
+            </div>
+            <div>
+              <label style="color:var(--muted);font-size:14px">문제 유형</label>
+              <select id="newType" onchange="updateAnswerField()">
+                <option value="OX">OX 문제</option>
+                <option value="SHORT">단답형</option>
+                <option value="KEYWORD">키워드형 (유연한 채점)</option>
+              </select>
+            </div>
+          </div>
+          
+          <div>
+            <label style="color:var(--muted);font-size:14px">문제</label>
+            <textarea id="newPrompt" placeholder="예: TCP는 연결 지향 프로토콜이다."></textarea>
+          </div>
+          
+          <div id="answerField">
+            <label style="color:var(--muted);font-size:14px">정답</label>
+            <input type="text" id="newAnswer" placeholder="true 또는 false">
+          </div>
+          
+          <div id="synonymField" style="display:none">
+            <label style="color:var(--muted);font-size:14px">동의어 (쉼표로 구분, 선택사항)</label>
+            <input type="text" id="newSynonyms" placeholder="예: Atomicity, 원자성, atomic">
+            <div class="hint">다양한 표현을 인정하려면 동의어를 입력하세요</div>
+            <div style="margin-top:8px">
+              <label style="color:var(--muted);font-size:14px">유사 일치(퍼지) 허용</label>
+              <div><input type="checkbox" id="shortFuzzyToggle" checked> <span style="font-size:12px;color:var(--muted)">철자 오차/근접 단어 허용</span></div>
+            </div>
+          </div>
+          
+          <div id="keywordField" style="display:none">
+            <label style="color:var(--muted);font-size:14px">필수 키워드 (쉼표로 구분)</label>
+            <input type="text" id="newKeywords" placeholder="예: process|프로세스, memory|메모리, 공유, 컨텍스트">
+            <div class="hint">N-of-M 기준(기본 75%)으로 채점. 각 키워드는 '|'로 동의어를 지정할 수 있습니다 (예: process|프로세스).</div>
+            <div class="grid grid-2" style="margin-top:8px">
+              <div>
+                <label style="color:var(--muted);font-size:14px">임계값</label>
+                <select id="keywordThresholdMode" onchange="updateAnswerField()">
+                  <option value="default">기본(75%)</option>
+                  <option value="custom">사용자 정의</option>
+                </select>
+              </div>
+              <div id="keywordThresholdInput" style="display:none">
+                <label style="color:var(--muted);font-size:14px">N/M 또는 숫자</label>
+                <input type="text" id="newKeywordThreshold" placeholder="예: 3/4 또는 2">
+              </div>
+            </div>
+          </div>
+          
+          <div>
+            <label style="color:var(--muted);font-size:14px">해설 (선택)</label>
+            <textarea id="newExplain" placeholder="정답에 대한 설명을 입력하세요"></textarea>
+          </div>
+          
+          <button onclick="addQuestion()" class="success">
+            <span>➕</span> 문제 추가
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 관리 탭 -->
+    <div id="manageTab" class="tab-content" style="display:none">
+      <div class="grid grid-2">
+        <div class="card">
+          <h2>📝 내 문제 목록</h2>
+          <div class="grid grid-3" style="margin-bottom:8px">
+            <div>
+              <label style="color:var(--muted);font-size:14px">검색</label>
+              <input type="text" id="qSearch" placeholder="텍스트 검색" oninput="updateQuestionList()">
+            </div>
+            <div>
+              <label style="color:var(--muted);font-size:14px">유형</label>
+              <select id="qTypeFilter" onchange="updateQuestionList()">
+                <option value="">전체</option>
+                <option value="OX">OX</option>
+                <option value="SHORT">단답형</option>
+                <option value="KEYWORD">키워드형</option>
+              </select>
+            </div>
+            <div>
+              <label style="color:var(--muted);font-size:14px">태그</label>
+              <input type="text" id="qTagFilter" placeholder="예: group:..." oninput="updateQuestionList()">
+            </div>
+            <div>
+              <label style="color:var(--muted);font-size:14px">덱 필터</label>
+              <select id="qDeckFilter" onchange="updateQuestionList()"></select>
+            </div>
+          </div>
+          <div class="question-list" id="questionList"></div>
+        </div>
+        
+        <div class="card">
+          <h2>🗂️ 덱 관리</h2>
+          <div class="grid">
+            <input type="text" id="newDeckName" placeholder="새 덱 이름">
+            <button onclick="addDeck()">덱 추가</button>
+          </div>
+          <div style="margin-top:16px">
+            <h3 style="font-size:16px;color:var(--muted)">현재 덱</h3>
+            <div id="deckList"></div>
+          </div>
+        </div>
+      </div>
+      
+      <div class="card">
+        <h2>🔧 데이터 관리</h2>
+        <div class="grid grid-3">
+          <button onclick="exportData()" class="secondary">
+            <span>💾</span> 데이터 내보내기
+          </button>
+          <button onclick="document.getElementById('importFile').click()" class="secondary">
+            <span>📂</span> 데이터 가져오기
+          </button>
+          <input type="file" id="importFile" style="display:none" onchange="importData(event)">
+          <button onclick="downloadImportTemplate()" class="secondary">
+            <span>📄</span> 템플릿 다운로드
+          </button>
+          <button onclick="resetAll()" class="danger">
+            <span>🗑️</span> 전체 초기화
+          </button>
+          <button onclick="resetData()" class="secondary">
+            <span>🔁</span> 데이터 리셋
+          </button>
+        </div>
+        <div style="margin-top:16px">
+          <h3 style="font-size:16px;color:var(--muted)">가이드형 가져오기</h3>
+          <div id="importDrop" style="border:1px dashed var(--muted); border-radius:8px; padding:16px; text-align:center; color:var(--muted)">
+            파일을 여기로 드래그하거나 클릭하여 선택 (CSV/TSV)
+          </div>
+          <input type="file" id="importDelimitedFile" accept=".csv,.tsv,text/csv,text/tab-separated-values" style="display:none">
+          <div id="importSummary" style="margin-top:8px; font-size:12px; color:var(--muted)"></div>
+          <div id="importPreview" style="margin-top:12px"></div>
+          <button id="importValidBtn" class="success" style="margin-top:8px" disabled onclick="importValidPreviewRows()">유효한 항목 가져오기</button>
+          <button id="undoImportBtn" class="secondary" style="margin-top:8px; margin-left:8px" onclick="undoLastImport()" disabled>되돌리기</button>
+        </div>
+        <div style="margin-top:16px">
+          <h3 style="font-size:16px;color:var(--muted)">자연어 붙여넣기 (키워드형)</h3>
+          <textarea id="nlPaste" placeholder="• 운영체제, 프로세스, 스케줄링\n• 네트워크, TCP, 3-way handshake" style="width:100%;min-height:100px"></textarea>
+          <div style="margin-top:8px">
+            <button class="secondary" onclick="parseNaturalLanguage()">미리보기</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>⚙️ 설정</h2>
+        <div class="grid grid-3">
+          <div>
+            <label style="color:var(--muted);font-size:14px">일일 복습 한도</label>
+            <input type="number" id="dailyLimitInput" min="1" max="500" placeholder="예: 30">
+          </div>
+          <div style="align-self:end">
+            <button onclick="saveSettings()" class="secondary">저장</button>
+          </div>
+        </div>
+        <div class="hint">권장 10~100. 변경 사항은 즉시 적용됩니다.</div>
+      </div>
+
+      <div class="card">
+        <h2>⚡ 빠른 추가 (덱별)</h2>
+        <div class="grid grid-3">
+          <div>
+            <label style="color:var(--muted);font-size:14px">덱</label>
+            <select id="quickDeck"></select>
+          </div>
+          <div>
+            <label style="color:var(--muted);font-size:14px">유형</label>
+            <select id="quickType" onchange="updateQuickAddFields()">
+              <option value="OX">OX</option>
+              <option value="SHORT">단답형</option>
+              <option value="KEYWORD">키워드형</option>
+            </select>
+          </div>
+          <div style="grid-column:1/-1">
+            <label style="color:var(--muted);font-size:14px">문제</label>
+            <input type="text" id="quickPrompt" placeholder="문제 내용">
+          </div>
+          <div id="quickAnswerWrap">
+            <label style="color:var(--muted);font-size:14px">정답</label>
+            <input type="text" id="quickAnswer" placeholder="true/false 또는 단답">
+          </div>
+          <div id="quickSynWrap" style="display:none">
+            <label style="color:var(--muted);font-size:14px">동의어</label>
+            <input type="text" id="quickSynonyms" placeholder="쉼표로 구분">
+            <div><input type="checkbox" id="quickFuzzy" checked> 퍼지 허용</div>
+          </div>
+          <div id="quickKeyWrap" style="display:none">
+            <label style="color:var(--muted);font-size:14px">키워드</label>
+            <input type="text" id="quickKeywords" placeholder="쉼표 구분, 항목 내 a|b 허용">
+            <input type="text" id="quickKeyThr" placeholder="임계값 (예: 3/4 또는 2)" style="margin-top:6px">
+          </div>
+          <div style="grid-column:1/-1;align-self:end">
+            <button class="success" onclick="quickAdd()">추가</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 통계 탭 -->
+    <div id="statsTab" class="tab-content" style="display:none">
+      <div class="grid grid-3">
+        <div class="card">
+          <h2>📊 학습 통계</h2>
+          <div id="statsContent"></div>
+        </div>
+        <div class="card">
+          <h2>🏆 성취도</h2>
+          <div id="achievementContent"></div>
+        </div>
+        <div class="card">
+          <h2>📅 복습 일정</h2>
+          <div id="scheduleContent"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" aria-live="polite"></div>
+
+<script src="https://unpkg.com/dexie@3.2.4/dist/dexie.js"></script>
+<script src="app.js"></script>
+</body>
+</html></body>
+</html>
