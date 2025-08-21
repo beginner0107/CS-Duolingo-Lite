@@ -18,6 +18,12 @@ CS Study App은 SM-2 Spaced repetition 알고리즘을 구현하여 컴퓨터 �
   - Short Answer (fuzzy matching 및 synonyms 지원)
   - Keyword 기반 (N-of-M grading system)
 
+- **AI 지원 답안 채점**
+  - Local 채점: 기존 규칙 기반 알고리즘
+  - Cloud 채점: OpenAI, Anthropic, Gemini API 지원
+  - Auto 모드: 불확실한 답안을 Cloud로 전송
+  - Fallback 시스템: Cloud 실패 시 Local로 자동 전환
+
 - **SM-2 Algorithm 통합**
   - 적응형 복습 스케줄링
   - 4단계 난이도 grading (Again/Hard/Good/Easy)
@@ -29,6 +35,7 @@ CS Study App은 SM-2 Spaced repetition 알고리즘을 구현하여 컴퓨터 �
 - **Keyboard Navigation**: 전체 keyboard shortcuts 지원
 - **Drag & Drop**: 관리 interface에서 문제 순서 변경
 - **Visual Feedback**: Loading states, animations, progress indicators
+- **AI 설정 UI**: 사용자 친화적인 AI provider 및 API key 관리
 
 ### Data 관리
 - **Modular Architecture**: Database, spaced repetition, UI handling을 위한 ES6 modules
@@ -40,6 +47,7 @@ CS Study App은 SM-2 Spaced repetition 알고리즘을 구현하여 컴퓨터 �
 - **Chart.js 통합**: 일일 복습 활동 및 streak visualization
 - **Progress Tracking**: XP system, streaks, completion rates
 - **Performance Metrics**: 정확도 분석 및 학습 패턴
+- **AI 사용 통계**: Local/Cloud 채점 사용량 추적 및 메트릭
 
 ### PWA 기능
 - **Offline 운영**: Internet 없이 완전한 기능
@@ -90,6 +98,25 @@ http-server . -p 8000 -c-1
 open http://localhost:8000/cs-duolingo-lite.html
 ```
 
+### AI 기능 설정 (선택사항)
+AI 채점 기능을 사용하려면 애플리케이션의 설정 패널에서 구성하세요:
+
+1. **관리 > 설정** 탭으로 이동
+2. **AI 설정** 카드에서 다음 정보 입력:
+   - **Provider**: OpenAI, Anthropic, 또는 Google Gemini 선택
+   - **API Key**: 선택한 provider의 API 키
+   - **Model**: 사용할 모델 (자동 선택 또는 수동 선택)
+3. **AI 설정 저장** 버튼 클릭
+4. **연결 테스트** 버튼으로 설정 확인
+5. **AI 모드**를 Local/Auto/Cloud 중 선택
+
+지원되는 AI 모델:
+- **OpenAI**: gpt-4o-mini, gpt-4o, gpt-3.5-turbo
+- **Anthropic**: claude-3-haiku-20240307, claude-3-sonnet-20240229  
+- **Google Gemini**: gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite, gemini-2.0-flash
+
+**보안 참고**: API 키는 브라우저의 localStorage에만 저장되며 서버로 전송되지 않습니다.
+
 ### Production 배포
 1. HTTPS를 지원하는 web server에 파일 업로드
 2. `.js` 및 `.json` 파일의 적절한 MIME types 확인
@@ -111,15 +138,36 @@ cs-study-app/
 ├── src/
 │   └── modules/
 │       ├── database.js       # Dexie/IndexedDB operations
-│       ├── spaced-repetition.js # SM-2 algorithm & grading
+│       ├── spaced-repetition.js # SM-2 algorithm & scheduling
+│       ├── scoring.js        # Answer checking & grading
 │       └── ui-handlers.js    # Event handling & UI management
+├── ai/
+│   ├── adapter.js           # AI service adapters (Cloud/Local)
+│   ├── index.js            # AI factory and configuration
+│   ├── router.js           # AI routing logic (Auto mode)
+│   └── prompts.js          # AI prompt templates
 ├── styles.css                # Application stylesheet
 ├── manifest.json            # PWA manifest
 ├── sw.js                   # Service worker
 ├── offline.html            # Offline fallback page
+├── server/
+│   ├── index.js            # Express server entry (optional)
+│   ├── router.js           # REST routes for questions (CRUD)
+│   └── database.js         # SQLite wrapper
 ├── CLAUDE.md              # 개발 가이드라인
 └── README.md              # 이 파일
 ```
+
+### 선택 사항: SQLite API 서버 실행
+- 의존성 설치: `npm i express sqlite3 cors node-fetch`
+- 실행: `node server/index.js` (기본 포트 5174)
+- REST 엔드포인트:
+  - `GET /api/questions`
+  - `GET /api/questions/:id`
+  - `POST /api/questions`
+  - `PUT /api/questions/:id`
+  - `DELETE /api/questions/:id`
+  - `POST /api/grade/essay` (OpenAI 기반 서술형 채점)
 
 ### 주요 구성 요소
 
@@ -127,8 +175,11 @@ cs-study-app/
 |------|------|------|
 | `cs-duolingo-lite.html` | Application shell | UI 구조, module imports, 초기화 |
 | `src/modules/database.js` | Data layer | IndexedDB schema, CRUD operations, migrations |
-| `src/modules/spaced-repetition.js` | Learning engine | SM-2 algorithm, 답안 검사, scheduling |
+| `src/modules/spaced-repetition.js` | Learning engine | SM-2 algorithm, scheduling |
+| `src/modules/scoring.js` | Grading engine | Answer checking, fuzzy matching, feedback |
 | `src/modules/ui-handlers.js` | Presentation layer | Event binding, DOM manipulation, animations |
+| `ai/adapter.js` | AI services | Cloud/Local AI adapters, fallback logic |
+| `ai/router.js` | AI routing | Auto mode logic, metrics tracking |
 | `styles.css` | Styling | Theme variables, responsive design, animations |
 
 ## Algorithm 구현
@@ -147,6 +198,26 @@ function nextSchedule(correct, state, grade = null) {
   }
   
   return state;
+}
+```
+
+### AI 답안 채점
+```javascript
+// Local 채점 (기존 규칙 기반)
+function gradeWithFeedback(question, userAnswer) {
+  // Fuzzy matching, 키워드 매칭, 정확한 답안 검사
+  return { score, correct, hits, misses, rationale };
+}
+
+// Auto 모드 라우팅
+async function decideGrade(input) {
+  const localResult = await LocalAdapter.grade(input);
+  
+  // 불확실한 점수(0.6-0.8)면 Cloud로 전송
+  if (localResult.score >= 0.6 && localResult.score < 0.8) {
+    return await CloudAdapter.grade(input);
+  }
+  return localResult;
 }
 ```
 

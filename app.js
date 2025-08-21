@@ -1,6 +1,17 @@
+import { getAdapter } from './ai/index.js';
+import { openEditQuestion as uiOpenEditQuestion, closeEditModal as uiCloseEditModal, saveEditQuestion as uiSaveEditQuestion, showTab as uiShowTab, bindEvents } from './src/modules/ui-handlers.js';
+import { gradeQuestionAsync } from './src/modules/scoring.js';
+
+// Immediately bind critical functions for HTML onclick handlers
+// This ensures they're available even before DOMContentLoaded
+window.showTab = uiShowTab;
+window.openEditQuestion = uiOpenEditQuestion;
+window.saveEditQuestion = uiSaveEditQuestion;
+window.closeEditModal = uiCloseEditModal;
+
 // ========== 데이터베이스 설정 (IndexedDB with Dexie) ==========
 const db = new Dexie('CSStudyApp');
-const APP_SCHEMA_VERSION = 5; // App-level schema/meta version (not Dexie version)
+const APP_SCHEMA_VERSION = 51; // App-level schema/meta version (not Dexie version)
 
 // Schema versioning - Version 1 (initial schema)
 db.version(1).stores({
@@ -54,6 +65,32 @@ db.version(5).stores({
   note_items: '++id, noteId, ts, text, *tags'
 });
 
+// Dexie schema v51: compatibility fix for existing databases
+db.version(51).stores({
+  profile: '++id, xp, streak, lastStudy',
+  decks: '++id, name, created',
+  questions: '++id, deck, type, prompt, answer, keywords, synonyms, explain, created, sortOrder, *tags',
+  review: '++id, questionId, ease, interval, due, count, created, updated',
+  meta: 'key',
+  notes: '++id, deckId, title, source, content, createdAt, updatedAt',
+  note_items: '++id, noteId, ts, text, *tags'
+});
+
+// Migration hook for version 51 - add missing fields to notes
+db.version(51).upgrade(async (trans) => {
+  const notes = await trans.table('notes').toArray();
+  for (const note of notes) {
+    const updates = {};
+    if (!note.content) updates.content = '';
+    if (!note.createdAt) updates.createdAt = new Date();
+    if (!note.updatedAt) updates.updatedAt = new Date();
+    
+    if (Object.keys(updates).length > 0) {
+      await trans.table('notes').update(note.id, updates);
+    }
+  }
+});
+
 // Migration hook for version 5 - add sortOrder to existing questions
 db.version(5).upgrade(async (trans) => {
   const questions = await trans.table('questions').toArray();
@@ -85,7 +122,42 @@ async function getSchemaVersion() {
 }
 
 async function setSchemaVersion(v) {
-  await db.table('meta').put({ key: 'schemaVersion', value: v });
+  try {
+    await db.table('meta').put({ key: 'schemaVersion', value: v });
+  } catch (error) {
+    console.warn('Failed to set schema version:', error);
+    // If database version conflict, suggest reset
+    if (error.name === 'VersionError' || error.name === 'DatabaseClosedError') {
+      console.warn('Database version conflict detected. Consider clearing IndexedDB data.');
+    }
+    throw error;
+  }
+}
+
+async function resetDatabase() {
+  console.log('Resetting database...');
+  try {
+    // Close the database first
+    if (db.isOpen()) {
+      db.close();
+    }
+    
+    // Delete the database completely
+    await Dexie.delete('CSStudyApp');
+    console.log('Database deleted successfully');
+    
+    // Wait a bit to ensure deletion is complete
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Force a page reload to restart with fresh database
+    console.log('Database reset completed, reloading page...');
+    window.location.reload();
+    
+  } catch (error) {
+    console.error('Database reset failed:', error);
+    // If reset fails, suggest manual cleanup
+    throw new Error('Database reset failed. Please manually clear IndexedDB data in browser developer tools.');
+  }
 }
 
 async function getDailyRollup() {
@@ -149,10 +221,18 @@ function setDailyStats(stats) {
 // ========== 데이터 마이그레이션 ==========
 async function migrateFromLocalStorage() {
 	try {
-		// Idempotent check using meta.schemaVersion
-		const currentMetaVersion = await getSchemaVersion();
-		if (currentMetaVersion && currentMetaVersion >= APP_SCHEMA_VERSION) {
-			return;
+		// Force database reset if version conflict exists
+		try {
+			const currentMetaVersion = await getSchemaVersion();
+			if (currentMetaVersion && currentMetaVersion >= APP_SCHEMA_VERSION) {
+				return;
+			}
+		} catch (error) {
+			if (error.name === 'DatabaseClosedError' || error.name === 'VersionError') {
+				console.warn('Database version conflict detected, forcing reset...');
+				await resetDatabase();
+				console.log('Database reset completed, proceeding with fresh initialization');
+			}
 		}
 
 		console.log('Starting localStorage to IndexedDB migration...');
@@ -221,7 +301,20 @@ async function migrateFromLocalStorage() {
 
 	} catch (error) {
 		console.error('Migration failed:', error);
-		showToast('데이터 마이그레이션 중 오류가 발생했습니다', 'danger');
+		
+		// If it's a version error, suggest database reset
+		if (error.name === 'DatabaseClosedError' || error.name === 'VersionError') {
+			console.warn('Database version conflict - attempting database reset');
+			try {
+				await resetDatabase();
+				showToast('데이터베이스를 초기화했습니다. 페이지를 새로고침해주세요.', 'warning');
+			} catch (resetError) {
+				console.error('Database reset failed:', resetError);
+				showToast('데이터베이스 버전 충돌 - 브라우저 개발자 도구에서 IndexedDB를 삭제해주세요', 'danger');
+			}
+		} else {
+			showToast('데이터 마이그레이션 중 오류가 발생했습니다', 'danger');
+		}
 	}
 }
 
@@ -588,7 +681,7 @@ async function startSession() {
   const today = todayStr();
 
   // Classify questions by category
-  const inDeck = questions.filter(q => q.deck === deckId);
+  const inDeck = questions.filter(q => String(q.deck) === String(deckId));
   const seenIds = new Set(Object.keys(review).map(Number));
 
   const isDue = (q) => review[q.id]?.due && review[q.id].due <= today;
@@ -791,7 +884,31 @@ async function submitAnswer(userAnswer) {
   try {
     document.querySelectorAll('#qArea button').forEach(b => b.disabled = true);
   } catch (_) {}
-  const correct = checkAnswer(q, userAnswer);
+  const feedback = await gradeQuestionAsync(q, userAnswer);
+  const correct = feedback.correct === true;
+  
+  // Optional AI grading for enhanced feedback
+  let aiResult = null;
+  try {
+    const aiMode = localStorage.getItem('aiMode') || 'local';
+    const input = {
+      prompt: userAnswer,
+      reference: { answer: q.answer, keywords: q.keywords }
+    };
+    
+    if (aiMode === 'auto') {
+      const { decideGrade } = await import('./ai/router.js');
+      aiResult = await decideGrade(input);
+    } else if (aiMode === 'local') {
+      const { getAdapter } = await import('./ai/index.js');
+      aiResult = await getAdapter('local').grade(input);
+    } else if (aiMode === 'cloud') {
+      const { getAdapter } = await import('./ai/index.js');
+      aiResult = await getAdapter('cloud').grade(input);
+    }
+    
+    window._lastAiResult = aiResult;
+  } catch (e) { /* AI grading optional */ }
   
   // 점수 & XP (temporary for initial feedback)
   const gain = correct ? 10 : 2;
@@ -804,7 +921,7 @@ async function submitAnswer(userAnswer) {
   await setProfile(profile);
   
   // 결과 표시
-  await showResult(correct, q, userAnswer);
+  await showResult(q, userAnswer, feedback);
   await updateProgress();
   
   // Store the question for grading
@@ -1024,17 +1141,9 @@ function matchKeywordAnswer(question, userAnswer) {
   return { passed: matched >= threshold, matched, total, threshold, perGroup };
 }
 
-async function showResult(correct, question, userAnswer) {
+async function showResult(question, userAnswer, feedback) {
   const resultArea = document.getElementById('resultArea');
-  
-  // Get detailed feedback from scoring module
-  let feedback = null;
-  try {
-    const scoringModule = await import('./src/modules/scoring.js');
-    feedback = scoringModule.gradeWithFeedback(question, userAnswer);
-  } catch (e) {
-    console.warn('Could not load scoring module for feedback:', e);
-  }
+  const correct = feedback?.correct === true;
   
   const review = await getReview();
   const state = review[question.id];
@@ -1050,13 +1159,18 @@ async function showResult(correct, question, userAnswer) {
   if (feedback) {
     const hitsStr = feedback.hits.length ? feedback.hits.join(',') : 'none';
     const missesStr = feedback.misses.length ? feedback.misses.join(',') : 'none';
+    const scoreLabel = question.type === 'ESSAY' ? `${Math.round((feedback.score || 0) * 100)}/100` : feedback.score.toFixed(2);
     html += `<div style="font-size:14px;color:var(--muted);margin-bottom:8px">`;
-    html += `Score: ${feedback.score.toFixed(2)} • Hits: {${hitsStr}} • Misses: {${missesStr}}${feedback.notes ? ' • ' + feedback.notes : ''}`;
+    html += `Score: ${scoreLabel} • Hits: {${hitsStr}} • Misses: {${missesStr}}${feedback.notes ? ' • ' + feedback.notes : ''}`;
     html += `</div>`;
   }
   
   if (correct) {
-    html += '<h3>✅ 정답!</h3>';
+    html += '<h3>✅ 정답!';
+    if (window._lastAiResult) {
+      html += `<span class="ai-badge">AI:${window._lastAiResult.used}</span>`;
+    }
+    html += '</h3>';
   } else {
     html += '<h3>❌ 오답</h3>';
     if (question.type === 'KEYWORD' && question.keywords) {
@@ -1177,7 +1291,7 @@ async function addQuestion() {
       const fuzzyToggle = document.getElementById('shortFuzzyToggle');
       question.shortFuzzy = !!(fuzzyToggle ? fuzzyToggle.checked : true);
     }
-  } else if (type === 'KEYWORD') {
+  } else if (type === 'KEYWORD' || type === 'ESSAY') {
     const keywords = document.getElementById('newKeywords').value
       .split(',')
       .map(k => k.trim())
@@ -1231,7 +1345,7 @@ function updateAnswerField() {
    keywordField.style.display = 'none';
    document.getElementById('newAnswer').placeholder = '정답을 입력하세요';
    if (fuzzyToggle) fuzzyToggle.checked = true;
- } else if (type === 'KEYWORD') {
+ } else if (type === 'KEYWORD' || type === 'ESSAY') {
    answerField.style.display = 'none';
    synonymField.style.display = 'none';
    keywordField.style.display = 'block';
@@ -1410,7 +1524,14 @@ async function updateQuestionList() {
 
 	let questions;
 	try {
-		questions = await query.orderBy('sortOrder').toArray();
+		// If we have filters, we need to get all and sort manually
+		if (deckId || type || tag || search) {
+			questions = await query.toArray();
+			questions = questions.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+		} else {
+			// If no filters, use orderBy directly on the table
+			questions = await db.questions.orderBy('sortOrder').toArray();
+		}
 	} catch (error) {
 		if (error.name === 'SchemaError' && error.message.includes('sortOrder')) {
 			// Fallback to default ordering for old schema
@@ -1435,14 +1556,136 @@ async function updateQuestionList() {
           <div class="badge">${deckName} · ${q.type}</div>
           <div style="margin-top:4px">${escapeHtml(q.prompt.substring(0, 50))}...</div>
         </div>
-        <button class="danger" onclick="deleteQuestion(${q.id})" style="padding:6px 12px">
-          삭제
-        </button>
+        <div style="display:flex; gap:8px">
+          <button class="secondary" onclick="openEditQuestion(${q.id})" style="padding:6px 12px">수정</button>
+          <button class="danger" onclick="deleteQuestion(${q.id})" style="padding:6px 12px">삭제</button>
+        </div>
       </div>
     `;
 	});
 
 	document.getElementById('questionList').innerHTML = html || '<div style="text-align:center;color:var(--muted);padding:20px">문제가 없습니다</div>';
+}
+
+// ========== 문제 수정 모달 ==========
+function createModal(html) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;z-index:9998';
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.style.cssText = 'background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;max-width:640px;width:90%;padding:16px;box-shadow:0 8px 24px rgba(0,0,0,.2);z-index:9999';
+  modal.innerHTML = html;
+  overlay.appendChild(modal);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(overlay); });
+  document.body.appendChild(overlay);
+  return overlay;
+}
+
+function closeModal(overlay) {
+  try { overlay.remove(); } catch (_) {}
+}
+
+async function openEditQuestion(id) {
+  const q = await db.questions.get(id);
+  if (!q) { showToast('문제를 찾을 수 없습니다', 'danger'); return; }
+  const decks = await getDecks();
+  const deckOptions = decks.map(d => `<option value="${d.id}" ${String(d.id)===String(q.deck)?'selected':''}>${d.name}</option>`).join('');
+  const html = `
+    <h3 style="margin-top:0">문제 수정</h3>
+    <div class="grid">
+      <div>
+        <label style="color:var(--muted);font-size:14px">덱</label>
+        <select id="editDeck">${deckOptions}</select>
+      </div>
+      <div>
+        <label style="color:var(--muted);font-size:14px">유형</label>
+        <select id="editType">
+          <option value="OX" ${q.type==='OX'?'selected':''}>OX</option>
+          <option value="SHORT" ${q.type==='SHORT'?'selected':''}>단답형</option>
+          <option value="KEYWORD" ${q.type==='KEYWORD'?'selected':''}>키워드형</option>
+          <option value="ESSAY" ${q.type==='ESSAY'?'selected':''}>서술형</option>
+        </select>
+      </div>
+      <div style="grid-column:1/-1">
+        <label style="color:var(--muted);font-size:14px">문제</label>
+        <textarea id="editPrompt">${q.prompt || ''}</textarea>
+      </div>
+      <div id="editAnswerWrap" style="display:${q.type==='OX'||q.type==='SHORT'?'block':'none'}">
+        <label style="color:var(--muted);font-size:14px">정답</label>
+        <input type="text" id="editAnswer" value="${q.answer || ''}" placeholder="true/false 또는 단답">
+      </div>
+      <div id="editSynWrap" style="display:${q.type==='SHORT'?'block':'none'}">
+        <label style="color:var(--muted);font-size:14px">동의어 (쉼표)</label>
+        <input type="text" id="editSynonyms" value="${(q.synonyms||[]).join(', ')}">
+        <div><input type="checkbox" id="editFuzzy" ${q.shortFuzzy!==false?'checked':''}> 퍼지 허용</div>
+      </div>
+      <div id="editKeyWrap" style="display:${q.type==='KEYWORD'||q.type==='ESSAY'?'block':'none'}">
+        <label style="color:var(--muted);font-size:14px">키워드 (쉼표, 항목 내 a|b 허용)</label>
+        <input type="text" id="editKeywords" value="${(q.keywords||[]).join(', ')}">
+        <label style="color:var(--muted);font-size:14px;margin-top:8px">임계값 (예: 7/10 또는 숫자)</label>
+        <input type="text" id="editKeyThr" value="${q.keywordThreshold||''}">
+      </div>
+      <div style="grid-column:1/-1">
+        <label style="color:var(--muted);font-size:14px">해설</label>
+        <textarea id="editExplain">${q.explain || ''}</textarea>
+      </div>
+      <div style="grid-column:1/-1;display:flex;justify-content:flex-end;gap:8px">
+        <button class="secondary" onclick="closeEditModal(this)">취소</button>
+        <button class="success" onclick="saveEditQuestion(${id}, this)">저장</button>
+      </div>
+    </div>
+    <script>
+      (function(){
+        const typeEl=document.getElementById('editType');
+        const ans=document.getElementById('editAnswerWrap');
+        const syn=document.getElementById('editSynWrap');
+        const key=document.getElementById('editKeyWrap');
+        typeEl.addEventListener('change',()=>{
+          const t=typeEl.value;
+          ans.style.display=(t==='OX'||t==='SHORT')?'block':'none';
+          syn.style.display=(t==='SHORT')?'block':'none';
+          key.style.display=(t==='KEYWORD'||t==='ESSAY')?'block':'none';
+        });
+      })();
+    </script>
+  `;
+  const overlay = createModal(html);
+  overlay.dataset.modal = 'edit-question';
+}
+
+function closeEditModal(el) {
+  const overlay = el.closest('.modal')?.parentElement;
+  if (overlay) closeModal(overlay);
+}
+
+async function saveEditQuestion(id, btn) {
+  try { btn.disabled = true; } catch(_){}
+  const updates = {
+    deck: Number(document.getElementById('editDeck').value),
+    type: document.getElementById('editType').value,
+    prompt: document.getElementById('editPrompt').value.trim(),
+    explain: document.getElementById('editExplain').value.trim()
+  };
+  if (updates.type === 'OX' || updates.type === 'SHORT') {
+    updates.answer = document.getElementById('editAnswer').value.trim();
+  }
+  if (updates.type === 'SHORT') {
+    const syn = document.getElementById('editSynonyms').value.split(',').map(s=>s.trim()).filter(Boolean);
+    if (syn.length) updates.synonyms = syn; else updates.synonyms = [];
+    updates.shortFuzzy = !!document.getElementById('editFuzzy').checked;
+  }
+  if (updates.type === 'KEYWORD' || updates.type === 'ESSAY') {
+    const keys = document.getElementById('editKeywords').value.split(',').map(s=>s.trim()).filter(Boolean);
+    updates.keywords = keys;
+    const thr = document.getElementById('editKeyThr').value.trim();
+    if (thr) updates.keywordThreshold = thr; else delete updates.keywordThreshold;
+  }
+  await DataStore.updateQuestion(id, updates);
+  showToast('수정되었습니다', 'success');
+  const overlay = document.querySelector('.modal-overlay[data-modal="edit-question"]');
+  if (overlay) closeModal(overlay);
+  await updateQuestionList();
 }
 
 async function updateStats() {
@@ -1713,6 +1956,13 @@ async function updateSettingsPanel() {
   if (!input) return;
   const s = getSettings();
   input.value = s.dailyReviewLimit;
+  
+  const aiMode = document.getElementById('aiMode');
+  if (aiMode) {
+    aiMode.value = localStorage.getItem('aiMode') || 'local';
+  }
+  
+  loadAISettings();
 }
 
 async function saveSettings() {
@@ -1725,6 +1975,12 @@ async function saveSettings() {
     return;
   }
   setSettings({ dailyReviewLimit: val });
+  
+  const aiMode = document.getElementById('aiMode');
+  if (aiMode) {
+    localStorage.setItem('aiMode', aiMode.value);
+  }
+  
   updateDueLeftUI();
   await updateProgress();
   showToast('설정이 저장되었습니다', 'success');
@@ -1745,8 +2001,8 @@ async function showTab(e, tabName) {
  } else if (tabName === 'stats') {
    await updateStats();
  } else if (tabName === 'notes') {
-   await updateDeckSelects();
-   await loadNotes();
+   // Note: notes functionality is now handled by ui-handlers.js
+   // This will be handled by the ui-handlers showTab function
  }
 }
 
@@ -1857,14 +2113,14 @@ function processDelimitedText(text) {
 function validateImportRow(row) {
   const errors = [];
   const t = (row.type || '').toUpperCase();
-  if (!['OX', 'SHORT', 'KEYWORD'].includes(t)) errors.push('유형 오류');
+  if (!['OX', 'SHORT', 'KEYWORD', 'ESSAY'].includes(t)) errors.push('유형 오류');
   if (!row.deck) errors.push('덱 누락');
   if (!row.prompt) errors.push('문제 누락');
   if (t === 'OX') {
     if (!['true', 'false', 'TRUE', 'FALSE'].includes(String(row.answer))) errors.push('OX 정답 오류');
   } else if (t === 'SHORT') {
     if (!row.answer) errors.push('정답 누락');
-  } else if (t === 'KEYWORD') {
+  } else if (t === 'KEYWORD' || t === 'ESSAY') {
     if (!row.keywords || row.keywords.length === 0) errors.push('키워드 누락');
   }
   return { ...row, type: t, error: errors.join(', ') };
@@ -1997,7 +2253,7 @@ async function quickAdd() {
       if (syn.length) q.synonyms = syn;
       q.shortFuzzy = !!document.getElementById('quickFuzzy')?.checked;
     }
-  } else if (type === 'KEYWORD') {
+  } else if (type === 'KEYWORD' || type === 'ESSAY') {
     const kw = (document.getElementById('quickKeywords')?.value || '').split(',').map(s => s.trim()).filter(Boolean);
     if (!kw.length) { showToast('키워드를 입력하세요', 'warning'); return; }
     q.keywords = kw;
@@ -2200,7 +2456,7 @@ async function exportNoteAsMarkdown() {
 
   const items = await db.note_items.where('noteId').equals(currentNoteId).sortBy('ts');
   const decks = await getDecks();
-  const deck = decks.find(d => d.id === note.deckId);
+  const deck = decks.find(d => Number(d.id) === Number(note.deckId));
 
   let markdown = `# ${note.title}\n\n`;
   if (deck) {
@@ -2273,7 +2529,7 @@ async function openNote(noteId) {
 
   document.getElementById('noteTitle').textContent = currentNote.title;
   const decks = await getDecks();
-  const deckName = (decks.find(d => d.id === currentNote.deckId) || {}).name || '알 수 없음';
+  const deckName = (decks.find(d => Number(d.id) === Number(currentNote.deckId)) || {}).name || '알 수 없음';
   document.getElementById('noteDeckName').textContent = deckName;
 
   await renderNoteItems();
@@ -2399,6 +2655,8 @@ function showInstallButton() {
 // ========== 초기화 ==========
 document.addEventListener('DOMContentLoaded', async function() {
  try {
+   // Initialize theme first
+   try { if (typeof initTheme === 'function') initTheme(); } catch (_) {}
    // Initialize database and run migration if needed
    await migrateFromLocalStorage();
    
@@ -2408,6 +2666,18 @@ document.addEventListener('DOMContentLoaded', async function() {
   // Optional: guided import setup (guard if not defined)
   try { if (typeof setupGuidedImport === 'function') setupGuidedImport(); } catch (_) {}
    
+  // AI-related global assignments and event listeners
+  Object.assign(window, { saveAISettings, testAIConnection });
+  document.getElementById('aiProvider')?.addEventListener('change', updateModelOptions);
+  
+  // Initialize UI handlers and events
+  bindEvents();
+  
+  // Note: Global functions are already bound at module load time for immediate HTML access
+  
+  // Load AI settings on startup
+ loadAISettings();
+  
   console.log('Application initialized successfully');
   try { runSM2PreviewTests(); } catch (_) {}
  } catch (error) {
@@ -2711,12 +2981,178 @@ async function createStreakChart(data) {
   });
 }
 
-// 전역 바인딩
+// ========== AI Settings ==========
+const AI_MODELS = {
+  openai: ['gpt-4o-mini','gpt-4o','gpt-3.5-turbo'],
+  anthropic: ['claude-3-haiku-20240307','claude-3-sonnet-20240229'],
+  // Updated to supported Gemini 2.x models
+  gemini: ['gemini-2.5-pro','gemini-2.5-flash','gemini-2.5-flash-lite','gemini-2.0-flash']
+};
+
+function updateModelOptions() {
+  const provider = document.getElementById('aiProvider')?.value;
+  const modelSelect = document.getElementById('aiModel');
+  
+  if (!modelSelect) return;
+  
+  modelSelect.innerHTML = '<option value="">자동 선택</option>';
+  if (provider && AI_MODELS[provider]) {
+    AI_MODELS[provider].forEach(model => {
+      modelSelect.innerHTML += `<option value="${model}">${model}</option>`;
+    });
+  }
+}
+
+function getBaseUrl(provider, model = null) {
+  switch (provider) {
+    case 'openai':
+      return 'https://api.openai.com/v1/chat/completions';
+    case 'anthropic':
+      return 'https://api.anthropic.com/v1/messages';
+    case 'gemini':
+      const geminiModel = model || 'gemini-2.5-flash';
+      return `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent`;
+    default:
+      throw new Error(`Unsupported provider: ${provider}`);
+  }
+}
+
+function saveAISettings() {
+  const provider = document.getElementById('aiProvider')?.value;
+  const apiKey = document.getElementById('aiApiKey')?.value;
+  const model = document.getElementById('aiModel')?.value;
+  
+  if (provider && apiKey) {
+    const selectedModel = model || AI_MODELS[provider]?.[0];
+    const config = {
+      provider,
+      apiKey,
+      model: selectedModel,
+      baseUrl: getBaseUrl(provider, selectedModel),
+      enableCloud: true
+    };
+    
+    localStorage.setItem('aiConfig', JSON.stringify(config));
+    window.__AI_CONF = config;
+    
+    if (typeof showToast === 'function') {
+      showToast('AI 설정이 저장되었습니다', 'success');
+    } else {
+      console.log('AI settings saved successfully');
+    }
+  } else {
+    if (typeof showToast === 'function') {
+      showToast('Provider와 API Key를 입력하세요', 'warning');
+    } else {
+      console.log('Provider and API Key required');
+    }
+  }
+}
+
+function loadAISettings() {
+  try {
+    const saved = localStorage.getItem('aiConfig');
+    if (saved) {
+      const config = JSON.parse(saved);
+      window.__AI_CONF = config;
+      
+      const providerEl = document.getElementById('aiProvider');
+      const apiKeyEl = document.getElementById('aiApiKey');
+      const modelEl = document.getElementById('aiModel');
+      
+      if (providerEl) providerEl.value = config.provider || '';
+      if (apiKeyEl) apiKeyEl.value = config.apiKey || '';
+      
+      updateModelOptions();
+      
+      if (modelEl) modelEl.value = config.model || '';
+    }
+  } catch (e) {
+    console.warn('Failed to load AI settings:', e);
+  }
+}
+
+async function testAIConnection() {
+  try {
+    // Ensure configuration is available - if not, try to create it from form values
+    if (!window.__AI_CONF || !window.__AI_CONF.apiKey) {
+      const provider = document.getElementById('aiProvider')?.value;
+      const apiKey = document.getElementById('aiApiKey')?.value;
+      const model = document.getElementById('aiModel')?.value;
+      
+      if (!provider || !apiKey) {
+        throw new Error('Provider와 API Key를 입력해주세요');
+      }
+      
+      // Temporarily set config for testing
+      const selectedModel = model || AI_MODELS[provider]?.[0];
+      window.__AI_CONF = {
+        provider,
+        apiKey,
+        model: selectedModel,
+        baseUrl: getBaseUrl(provider, selectedModel),
+        enableCloud: true
+      };
+    }
+    
+  const { getAdapter } = await import('./ai/index.js');
+  const adapter = getAdapter('cloud');
+  const res = await adapter.grade({ prompt: 'test', reference: { answer: 'test' } });
+  
+  if (typeof showToast === 'function') {
+    if (res.used === 'cloud') {
+      showToast('AI 연결 성공!', 'success');
+    } else {
+      const reason = res.rationale ? `: ${res.rationale}` : '';
+      showToast(`클라우드 연결 실패, 로컬 채점으로 대체됨${reason}`, 'warning');
+    }
+  } else {
+    console.log('AI connection result:', res);
+  }
+  } catch (e) {
+    if (typeof showToast === 'function') {
+      showToast(`연결 실패: ${e.message}`, 'danger');
+    } else {
+      console.log(`AI connection failed: ${e.message}`);
+    }
+  }
+}
+
+// Additional global bindings for immediate HTML compatibility
+// Critical functions are bound at module load time for instant availability
 window.switchTab = switchTab;
 window.revealAnswer = revealAnswer;
+window.gradeAnswer = gradeAnswer;
+window.submitAnswer = submitAnswer;
+window.startSession = startSession;
+window.addQuestion = addQuestion;
+window.addDeck = addDeck;
+window.exportData = exportData;
+window.importData = importData;
+window.resetAll = resetAll;
+window.saveSettings = saveSettings;
+window.testAIConnection = testAIConnection;
+window.saveAISettings = saveAISettings;
+window.deleteDeck = deleteDeck;
+window.deleteQuestion = deleteQuestion;
+
+// Additional functions for HTML compatibility
+window.updateAnswerField = updateAnswerField;
+window.updateHeader = updateHeader;
+window.updateDeckSelects = updateDeckSelects;
+window.updateDeckList = updateDeckList;
+window.updateQuestionList = updateQuestionList;
+window.updateSettingsPanel = updateSettingsPanel;
+window.updateStats = updateStats;
+window.downloadImportTemplate = downloadImportTemplate;
+window.resetData = resetData;
+window.importValidPreviewRows = importValidPreviewRows;
+window.undoLastImport = undoLastImport;
+window.parseNaturalLanguage = parseNaturalLanguage;
+window.updateQuickAddFields = updateQuickAddFields;
+window.quickAdd = quickAdd;
 window.toggleTheme = toggleTheme;
 window.handleDragStart = handleDragStart;
 window.handleDragOver = handleDragOver;
 window.handleDrop = handleDrop;
 window.handleDragEnd = handleDragEnd;
-window.resetChartsFlag = resetChartsFlag;

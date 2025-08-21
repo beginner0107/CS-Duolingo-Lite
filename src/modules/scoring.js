@@ -1,7 +1,14 @@
 // ========== Answer Checking & Grading ==========
+export const SHORT_PASS = 0.75;
+export const KEYWORD_PASS = 0.60;
+export const ESSAY_PASS = 0.60;
+
 export function normalizeText(text) {
   return text.toLowerCase().trim().replace(/\s+/g, ' ');
 }
+
+// Alias for clarity in new APIs
+export const normalize = normalizeText;
 
 export function levenshteinDistance(str1, str2) {
   const len1 = str1.length;
@@ -167,7 +174,7 @@ export function gradeWithFeedback(q, userAnswer) {
     };
   }
   
-  if (q.type === 'KEYWORD') {
+  if (q.type === 'KEYWORD' || q.type === 'ESSAY') {
     if (!q.keywords?.length) {
       return { correct: false, score: 0, hits: [], misses: [], notes: 'No keywords defined' };
     }
@@ -219,4 +226,140 @@ export function gradeWithFeedback(q, userAnswer) {
 export function checkAnswer(q, userAnswer) {
   const result = gradeWithFeedback(q, userAnswer);
   return result.score >= 0.5;
+}
+
+// New unified grader used by app and AI local adapter
+export function gradeQuestion(q, userAnswer) {
+  if (!userAnswer || typeof userAnswer !== 'string') {
+    return { correct: false, score: 0, hits: [], misses: [], notes: 'No answer provided' };
+  }
+
+  // OX exact match
+  if (q.type === 'OX') {
+    const isCorrect = normalize(q.answer) === normalize(userAnswer);
+    return {
+      correct: isCorrect,
+      score: isCorrect ? 1 : 0,
+      hits: isCorrect ? [q.answer] : [],
+      misses: isCorrect ? [] : [q.answer]
+    };
+  }
+
+  // SHORT: try strict/fuzzy/synonyms/regex. If fail and keywords exist, fallback to keyword grading (capped at 0.8)
+  if (q.type === 'SHORT') {
+    const regexes = q.regexes || [];
+    const synonyms = q.synonyms || [];
+    const fuzzyEnabled = q.fuzzyEnabled !== false;
+
+    const shortOk = checkShortAnswer(q.answer || '', userAnswer, synonyms, fuzzyEnabled, regexes);
+    if (shortOk) {
+      return { correct: true, score: 1, hits: [q.answer], misses: [] };
+    }
+
+    // Fallback to keyword grading for essay-like SHORT with keywords present
+    if (Array.isArray(q.keywords) && q.keywords.length > 0) {
+      const groups = buildKeywordGroups(q.keywords);
+      const total = groups.length;
+      const normAns = normalize(userAnswer);
+      const hits = [];
+      const misses = [];
+      let matched = 0;
+
+      for (let i = 0; i < groups.length; i++) {
+        const group = groups[i];
+        let groupMatched = false;
+        for (const variant of group) {
+          if (variant.type === 'regex') {
+            try {
+              if (new RegExp(variant.pattern, 'i').test(userAnswer)) { groupMatched = true; break; }
+            } catch (_) {}
+          } else if (normalize(variant.value).length && normAns.includes(normalize(variant.value))) {
+            groupMatched = true; break;
+          }
+        }
+        if (groupMatched) { matched++; hits.push(q.keywords[i]); }
+        else { misses.push(q.keywords[i]); }
+      }
+      const rawScore = total > 0 ? matched / total : 0;
+      const score = Math.min(0.8, rawScore);
+      const correct = score >= SHORT_PASS; // still respect SHORT_PASS for fallback
+      return { correct, score, hits, misses };
+    }
+
+    return { correct: false, score: 0, hits: [], misses: [q.answer] };
+  }
+
+  // KEYWORD: N-of-M with regex and fuzzy; success if either pass ratio or required count
+  if (q.type === 'KEYWORD') {
+    if (!q.keywords?.length) {
+      return { correct: false, score: 0, hits: [], misses: [], notes: 'No keywords defined' };
+    }
+
+    const groups = buildKeywordGroups(q.keywords);
+    const required = parseKeywordThreshold(q, groups.length);
+    const normalizedAnswer = normalize(userAnswer);
+    const hits = [];
+    const misses = [];
+    let matched = 0;
+
+    for (let i = 0; i < groups.length; i++) {
+      const group = groups[i];
+      let groupMatched = false;
+      for (const variant of group) {
+        if (variant.type === 'regex') {
+          try {
+            if (new RegExp(variant.pattern, 'i').test(userAnswer)) { groupMatched = true; break; }
+          } catch (_) {}
+        } else if (normalizedAnswer.includes(normalize(variant.value))) {
+          groupMatched = true; break;
+        }
+      }
+      if (groupMatched) { matched++; hits.push(q.keywords[i]); }
+      else { misses.push(q.keywords[i]); }
+    }
+
+    const score = groups.length > 0 ? matched / groups.length : 0;
+    const passByRatio = score >= KEYWORD_PASS;
+    const passByCount = matched >= required;
+    const correct = passByRatio || passByCount;
+    return { correct, score, hits, misses };
+  }
+
+  return { correct: false, score: 0, hits: [], misses: [], notes: 'Unknown question type' };
+}
+
+// Async version that uses local AI modules for advanced grading
+export async function gradeQuestionAsync(q, userAnswer) {
+  if (q?.type === 'ESSAY') {
+    try {
+      // Use local AI modules instead of external server
+      const { decideGrade } = await import('../../ai/router.js');
+      
+      const input = {
+        prompt: userAnswer,
+        reference: {
+          answer: q.answer || q.reference || '',
+          keywords: q.keywords || []
+        }
+      };
+      
+      const result = await decideGrade(input);
+      return { 
+        correct: result.correct, 
+        score: result.score, 
+        hits: [], 
+        misses: [], 
+        notes: result.rationale || 'AI graded response' 
+      };
+    } catch (e) {
+      console.warn('AI grading failed, falling back to local scoring:', e);
+      // Fallback: treat as KEYWORD if keywords exist
+      if (Array.isArray(q.keywords) && q.keywords.length) {
+        return gradeQuestion({ ...q, type: 'KEYWORD' }, userAnswer);
+      }
+      return { correct: false, score: 0, hits: [], misses: [], notes: 'Essay grading unavailable' };
+    }
+  }
+  // Default: reuse sync grading and wrap in Promise
+  return Promise.resolve(gradeQuestion(q, userAnswer));
 }
