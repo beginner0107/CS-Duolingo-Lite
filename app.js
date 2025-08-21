@@ -9,6 +9,9 @@ window.openEditQuestion = uiOpenEditQuestion;
 window.saveEditQuestion = uiSaveEditQuestion;
 window.closeEditModal = uiCloseEditModal;
 
+// Forward declaration for deleteQuestion (defined later in file)
+window.deleteQuestion = (...args) => deleteQuestion(...args);
+
 // ========== 데이터베이스 설정 (IndexedDB with Dexie) ==========
 const db = new Dexie('CSStudyApp');
 const APP_SCHEMA_VERSION = 51; // App-level schema/meta version (not Dexie version)
@@ -3131,10 +3134,7 @@ window.exportData = exportData;
 window.importData = importData;
 window.resetAll = resetAll;
 window.saveSettings = saveSettings;
-window.testAIConnection = testAIConnection;
-window.saveAISettings = saveAISettings;
 window.deleteDeck = deleteDeck;
-window.deleteQuestion = deleteQuestion;
 
 // Additional functions for HTML compatibility
 window.updateAnswerField = updateAnswerField;
