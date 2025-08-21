@@ -35,6 +35,7 @@ CS Study App은 SM-2 Spaced repetition 알고리즘을 구현하여 컴퓨터 �
 - **Keyboard Navigation**: 전체 keyboard shortcuts 지원
 - **Drag & Drop**: 관리 interface에서 문제 순서 변경
 - **Visual Feedback**: Loading states, animations, progress indicators
+- **AI 설정 UI**: 사용자 친화적인 AI provider 및 API key 관리
 
 ### Data 관리
 - **Modular Architecture**: Database, spaced repetition, UI handling을 위한 ES6 modules
@@ -46,6 +47,7 @@ CS Study App은 SM-2 Spaced repetition 알고리즘을 구현하여 컴퓨터 �
 - **Chart.js 통합**: 일일 복습 활동 및 streak visualization
 - **Progress Tracking**: XP system, streaks, completion rates
 - **Performance Metrics**: 정확도 분석 및 학습 패턴
+- **AI 사용 통계**: Local/Cloud 채점 사용량 추적 및 메트릭
 
 ### PWA 기능
 - **Offline 운영**: Internet 없이 완전한 기능
@@ -97,16 +99,23 @@ open http://localhost:8000/cs-duolingo-lite.html
 ```
 
 ### AI 기능 설정 (선택사항)
-```javascript
-// cs-duolingo-lite.html의 AI 설정 스크립트에서 주석 해제
-window.__AI_CONF = {
-  baseUrl: 'https://api.openai.com/v1/chat/completions',
-  apiKey: 'your-api-key',
-  provider: 'openai',          // 'openai' | 'anthropic' | 'gemini'
-  model: 'gpt-4o-mini',        // 모델별 지원 모델명
-  enableCloud: true           // Cloud 채점 활성화
-};
-```
+AI 채점 기능을 사용하려면 애플리케이션의 설정 패널에서 구성하세요:
+
+1. **관리 > 설정** 탭으로 이동
+2. **AI 설정** 카드에서 다음 정보 입력:
+   - **Provider**: OpenAI, Anthropic, 또는 Google Gemini 선택
+   - **API Key**: 선택한 provider의 API 키
+   - **Model**: 사용할 모델 (자동 선택 또는 수동 선택)
+3. **AI 설정 저장** 버튼 클릭
+4. **연결 테스트** 버튼으로 설정 확인
+5. **AI 모드**를 Local/Auto/Cloud 중 선택
+
+지원되는 AI 모델:
+- **OpenAI**: gpt-4o-mini, gpt-4o, gpt-3.5-turbo
+- **Anthropic**: claude-3-haiku-20240307, claude-3-sonnet-20240229  
+- **Google Gemini**: gemini-1.5-flash, gemini-1.5-pro
+
+**보안 참고**: API 키는 브라우저의 localStorage에만 저장되며 서버로 전송되지 않습니다.
 
 ### Production 배포
 1. HTTPS를 지원하는 web server에 파일 업로드
