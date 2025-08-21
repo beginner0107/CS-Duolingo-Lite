@@ -793,6 +793,29 @@ async function submitAnswer(userAnswer) {
   } catch (_) {}
   const correct = checkAnswer(q, userAnswer);
   
+  // Optional AI grading for enhanced feedback
+  let aiResult = null;
+  try {
+    const aiMode = localStorage.getItem('aiMode') || 'local';
+    const input = {
+      prompt: userAnswer,
+      reference: { answer: q.answer, keywords: q.keywords }
+    };
+    
+    if (aiMode === 'auto') {
+      const { decideGrade } = await import('./ai/router.js');
+      aiResult = await decideGrade(input);
+    } else if (aiMode === 'local') {
+      const { getAdapter } = await import('./ai/index.js');
+      aiResult = await getAdapter('local').grade(input);
+    } else if (aiMode === 'cloud') {
+      const { getAdapter } = await import('./ai/index.js');
+      aiResult = await getAdapter('cloud').grade(input);
+    }
+    
+    window._lastAiResult = aiResult;
+  } catch (e) { /* AI grading optional */ }
+  
   // 점수 & XP (temporary for initial feedback)
   const gain = correct ? 10 : 2;
   session.score += gain;
@@ -1056,7 +1079,11 @@ async function showResult(correct, question, userAnswer) {
   }
   
   if (correct) {
-    html += '<h3>✅ 정답!</h3>';
+    html += '<h3>✅ 정답!';
+    if (window._lastAiResult) {
+      html += `<span class="ai-badge">AI:${window._lastAiResult.used}</span>`;
+    }
+    html += '</h3>';
   } else {
     html += '<h3>❌ 오답</h3>';
     if (question.type === 'KEYWORD' && question.keywords) {
@@ -1713,6 +1740,11 @@ async function updateSettingsPanel() {
   if (!input) return;
   const s = getSettings();
   input.value = s.dailyReviewLimit;
+  
+  const aiMode = document.getElementById('aiMode');
+  if (aiMode) {
+    aiMode.value = localStorage.getItem('aiMode') || 'local';
+  }
 }
 
 async function saveSettings() {
@@ -1725,6 +1757,12 @@ async function saveSettings() {
     return;
   }
   setSettings({ dailyReviewLimit: val });
+  
+  const aiMode = document.getElementById('aiMode');
+  if (aiMode) {
+    localStorage.setItem('aiMode', aiMode.value);
+  }
+  
   updateDueLeftUI();
   await updateProgress();
   showToast('설정이 저장되었습니다', 'success');

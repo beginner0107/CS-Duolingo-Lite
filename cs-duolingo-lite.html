@@ -266,6 +266,14 @@
             <label style="color:var(--muted);font-size:14px">일일 복습 한도</label>
             <input type="number" id="dailyLimitInput" min="1" max="500" placeholder="예: 30">
           </div>
+          <div>
+            <label style="color:var(--muted);font-size:14px">AI 모드</label>
+            <select id="aiMode">
+              <option value="local">Local</option>
+              <option value="auto">Auto</option>
+              <option value="cloud">Cloud</option>
+            </select>
+          </div>
           <div style="align-self:end">
             <button onclick="saveSettings()" class="secondary">저장</button>
           </div>
@@ -364,9 +372,15 @@
 
   <div class="toast" id="toast" aria-live="polite"></div>
 
+<!-- Optional AI Configuration - operators can paste API keys here -->
+<script>
+  // window.__AI_CONF = { baseUrl: '...', apiKey: '...', provider: 'openai', model: 'gpt-4o-mini', enableCloud: true };
+</script>
+
 <script src="https://unpkg.com/dexie@3.2.4/dist/dexie.js"></script>
 <script type="module">
   // Import modules
+  import './ai/index.js';
   import { migrateFromLocalStorage, showToast } from './src/modules/database.js';
   import { runSM2PreviewTests } from './src/modules/spaced-repetition.js';
   import { bindEvents, initServiceWorker } from './src/modules/ui-handlers.js';
