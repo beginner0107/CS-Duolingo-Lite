@@ -281,6 +281,37 @@
         <div class="hint">권장 10~100. 변경 사항은 즉시 적용됩니다.</div>
       </div>
 
+      <!-- AI Settings -->
+      <div class="card">
+        <h2>🤖 AI 설정</h2>
+        <div class="grid">
+          <div>
+            <label>Provider:</label>
+            <select id="aiProvider">
+              <option value="">선택하세요</option>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="gemini">Google Gemini</option>
+            </select>
+          </div>
+          <div>
+            <label>API Key:</label>
+            <input type="password" id="aiApiKey" placeholder="API 키 입력">
+          </div>
+          <div>
+            <label>Model:</label>
+            <select id="aiModel">
+              <option value="">자동 선택</option>
+            </select>
+          </div>
+        </div>
+        <div style="margin-top:8px">
+          <button onclick="saveAISettings()" class="secondary">AI 설정 저장</button>
+          <button onclick="testAIConnection()" class="secondary">연결 테스트</button>
+        </div>
+        <div class="hint">API 키는 브라우저에만 저장됩니다. 보안을 위해 정기적으로 변경하세요.</div>
+      </div>
+
       <div class="card">
         <h2>⚡ 빠른 추가 (덱별)</h2>
         <div class="grid grid-3">
@@ -371,11 +402,6 @@
   </div>
 
   <div class="toast" id="toast" aria-live="polite"></div>
-
-<!-- Optional AI Configuration - operators can paste API keys here -->
-<script>
-  // window.__AI_CONF = { baseUrl: '...', apiKey: '...', provider: 'openai', model: 'gpt-4o-mini', enableCloud: true };
-</script>
 
 <script src="https://unpkg.com/dexie@3.2.4/dist/dexie.js"></script>
 <script type="module">

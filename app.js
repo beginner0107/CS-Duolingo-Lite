@@ -1745,6 +1745,8 @@ async function updateSettingsPanel() {
   if (aiMode) {
     aiMode.value = localStorage.getItem('aiMode') || 'local';
   }
+  
+  loadAISettings();
 }
 
 async function saveSettings() {
@@ -2748,6 +2750,115 @@ async function createStreakChart(data) {
     }
   });
 }
+
+// ========== AI Settings ==========
+const AI_MODELS = {
+  openai: ['gpt-4o-mini','gpt-4o','gpt-3.5-turbo'],
+  anthropic: ['claude-3-haiku-20240307','claude-3-sonnet-20240229'],
+  gemini: ['gemini-1.5-flash','gemini-1.5-pro']
+};
+
+function updateModelOptions() {
+  const provider = document.getElementById('aiProvider')?.value;
+  const modelSelect = document.getElementById('aiModel');
+  
+  if (!modelSelect) return;
+  
+  modelSelect.innerHTML = '<option value="">자동 선택</option>';
+  if (provider && AI_MODELS[provider]) {
+    AI_MODELS[provider].forEach(model => {
+      modelSelect.innerHTML += `<option value="${model}">${model}</option>`;
+    });
+  }
+}
+
+function getBaseUrl(provider) {
+  return {
+    openai: 'https://api.openai.com/v1/chat/completions',
+    anthropic: 'https://api.anthropic.com/v1/messages',
+    gemini: 'https://generativelanguage.googleapis.com/v1beta/models'
+  }[provider];
+}
+
+function saveAISettings() {
+  const provider = document.getElementById('aiProvider')?.value;
+  const apiKey = document.getElementById('aiApiKey')?.value;
+  const model = document.getElementById('aiModel')?.value;
+  
+  if (provider && apiKey) {
+    const config = {
+      provider,
+      apiKey,
+      model: model || AI_MODELS[provider]?.[0],
+      baseUrl: getBaseUrl(provider),
+      enableCloud: true
+    };
+    
+    localStorage.setItem('aiConfig', JSON.stringify(config));
+    window.__AI_CONF = config;
+    
+    if (typeof showToast === 'function') {
+      showToast('AI 설정이 저장되었습니다', 'success');
+    } else {
+      console.log('AI settings saved successfully');
+    }
+  } else {
+    if (typeof showToast === 'function') {
+      showToast('Provider와 API Key를 입력하세요', 'warning');
+    } else {
+      console.log('Provider and API Key required');
+    }
+  }
+}
+
+function loadAISettings() {
+  try {
+    const saved = localStorage.getItem('aiConfig');
+    if (saved) {
+      const config = JSON.parse(saved);
+      window.__AI_CONF = config;
+      
+      const providerEl = document.getElementById('aiProvider');
+      const apiKeyEl = document.getElementById('aiApiKey');
+      const modelEl = document.getElementById('aiModel');
+      
+      if (providerEl) providerEl.value = config.provider || '';
+      if (apiKeyEl) apiKeyEl.value = config.apiKey || '';
+      
+      updateModelOptions();
+      
+      if (modelEl) modelEl.value = config.model || '';
+    }
+  } catch (e) {
+    console.warn('Failed to load AI settings:', e);
+  }
+}
+
+async function testAIConnection() {
+  try {
+    const { getAdapter } = await import('./ai/index.js');
+    const adapter = getAdapter('cloud');
+    await adapter.grade({ prompt: 'test', reference: { answer: 'test' } });
+    
+    if (typeof showToast === 'function') {
+      showToast('AI 연결 성공!', 'success');
+    } else {
+      console.log('AI connection successful');
+    }
+  } catch (e) {
+    if (typeof showToast === 'function') {
+      showToast(`연결 실패: ${e.message}`, 'danger');
+    } else {
+      console.log(`AI connection failed: ${e.message}`);
+    }
+  }
+}
+
+// Wire change listener
+document.getElementById('aiProvider')?.addEventListener('change', updateModelOptions);
+
+// Expose functions to window
+Object.assign(window, { saveAISettings, testAIConnection });
 
 // 전역 바인딩
 window.switchTab = switchTab;
