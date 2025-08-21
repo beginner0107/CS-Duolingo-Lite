@@ -18,6 +18,12 @@ CS Study App은 SM-2 Spaced repetition 알고리즘을 구현하여 컴퓨터 �
   - Short Answer (fuzzy matching 및 synonyms 지원)
   - Keyword 기반 (N-of-M grading system)
 
+- **AI 지원 답안 채점**
+  - Local 채점: 기존 규칙 기반 알고리즘
+  - Cloud 채점: OpenAI, Anthropic, Gemini API 지원
+  - Auto 모드: 불확실한 답안을 Cloud로 전송
+  - Fallback 시스템: Cloud 실패 시 Local로 자동 전환
+
 - **SM-2 Algorithm 통합**
   - 적응형 복습 스케줄링
   - 4단계 난이도 grading (Again/Hard/Good/Easy)
@@ -90,6 +96,18 @@ http-server . -p 8000 -c-1
 open http://localhost:8000/cs-duolingo-lite.html
 ```
 
+### AI 기능 설정 (선택사항)
+```javascript
+// cs-duolingo-lite.html의 AI 설정 스크립트에서 주석 해제
+window.__AI_CONF = {
+  baseUrl: 'https://api.openai.com/v1/chat/completions',
+  apiKey: 'your-api-key',
+  provider: 'openai',          // 'openai' | 'anthropic' | 'gemini'
+  model: 'gpt-4o-mini',        // 모델별 지원 모델명
+  enableCloud: true           // Cloud 채점 활성화
+};
+```
+
 ### Production 배포
 1. HTTPS를 지원하는 web server에 파일 업로드
 2. `.js` 및 `.json` 파일의 적절한 MIME types 확인
@@ -111,8 +129,14 @@ cs-study-app/
 ├── src/
 │   └── modules/
 │       ├── database.js       # Dexie/IndexedDB operations
-│       ├── spaced-repetition.js # SM-2 algorithm & grading
+│       ├── spaced-repetition.js # SM-2 algorithm & scheduling
+│       ├── scoring.js        # Answer checking & grading
 │       └── ui-handlers.js    # Event handling & UI management
+├── ai/
+│   ├── adapter.js           # AI service adapters (Cloud/Local)
+│   ├── index.js            # AI factory and configuration
+│   ├── router.js           # AI routing logic (Auto mode)
+│   └── prompts.js          # AI prompt templates
 ├── styles.css                # Application stylesheet
 ├── manifest.json            # PWA manifest
 ├── sw.js                   # Service worker
@@ -127,8 +151,11 @@ cs-study-app/
 |------|------|------|
 | `cs-duolingo-lite.html` | Application shell | UI 구조, module imports, 초기화 |
 | `src/modules/database.js` | Data layer | IndexedDB schema, CRUD operations, migrations |
-| `src/modules/spaced-repetition.js` | Learning engine | SM-2 algorithm, 답안 검사, scheduling |
+| `src/modules/spaced-repetition.js` | Learning engine | SM-2 algorithm, scheduling |
+| `src/modules/scoring.js` | Grading engine | Answer checking, fuzzy matching, feedback |
 | `src/modules/ui-handlers.js` | Presentation layer | Event binding, DOM manipulation, animations |
+| `ai/adapter.js` | AI services | Cloud/Local AI adapters, fallback logic |
+| `ai/router.js` | AI routing | Auto mode logic, metrics tracking |
 | `styles.css` | Styling | Theme variables, responsive design, animations |
 
 ## Algorithm 구현
@@ -147,6 +174,26 @@ function nextSchedule(correct, state, grade = null) {
   }
   
   return state;
+}
+```
+
+### AI 답안 채점
+```javascript
+// Local 채점 (기존 규칙 기반)
+function gradeWithFeedback(question, userAnswer) {
+  // Fuzzy matching, 키워드 매칭, 정확한 답안 검사
+  return { score, correct, hits, misses, rationale };
+}
+
+// Auto 모드 라우팅
+async function decideGrade(input) {
+  const localResult = await LocalAdapter.grade(input);
+  
+  // 불확실한 점수(0.6-0.8)면 Cloud로 전송
+  if (localResult.score >= 0.6 && localResult.score < 0.8) {
+    return await CloudAdapter.grade(input);
+  }
+  return localResult;
 }
 ```
 
