@@ -26,8 +26,9 @@ export class CloudAdapter {
   /**
    * @param {GradingInput} input
    * @returns {Promise<GradingOutput>}
-   */
+  */
   async grade(input) {
+    let lastError;
     const config = window.__AI_CONF;
     if (!config || !config.baseUrl || !config.apiKey) {
       throw new Error('AI configuration not found. Set window.__AI_CONF with baseUrl, apiKey, provider, model');
@@ -35,10 +36,9 @@ export class CloudAdapter {
     
     const systemPrompt = "You are a bilingual (KR/EN) grader. Return strict JSON only, no prose. Score ∈ [0,1]. correct=true if score≥0.75. Consider synonyms and meaning.";
     
-    const userPrompt = `Q: ${input.prompt}
+    const userPrompt = `Question: ${input.prompt}
 Reference: ${input.reference?.answer || 'N/A'}
 Keywords (optional): ${JSON.stringify(input.reference?.keywords || [])}
-Student: ${input.prompt}
 
 Output format (MUST):
 {"score":0.0,"correct":false,"rationale":"short reason in KR or EN"}`;
@@ -47,7 +47,6 @@ Output format (MUST):
     
     // Exponential backoff: 250ms, 750ms, 1500ms
     const delays = [250, 750, 1500];
-    let lastError;
     
     for (let attempt = 0; attempt < delays.length + 1; attempt++) {
       try {
@@ -58,13 +57,24 @@ Output format (MUST):
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
         
-        const response = await fetch(config.baseUrl, {
+        // Handle different authentication methods per provider
+        let url = config.baseUrl;
+        let headers = { 'Content-Type': 'application/json' };
+        
+        if (config.provider === 'gemini') {
+          // Gemini uses API key as query parameter
+          url += `?key=${config.apiKey}`;
+        } else {
+          // OpenAI and Anthropic use Authorization header
+          headers['Authorization'] = `Bearer ${config.apiKey}`;
+          if (config.provider === 'anthropic') {
+            headers['anthropic-version'] = '2023-06-01';
+          }
+        }
+        
+        const response = await fetch(url, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${config.apiKey}`,
-            ...(config.provider === 'anthropic' && { 'anthropic-version': '2023-06-01' })
-          },
+          headers,
           body: JSON.stringify(requestBody),
           signal: controller.signal
         });
@@ -77,7 +87,7 @@ Output format (MUST):
         
         const data = await response.json();
         const content = this._extractContent(data, config.provider);
-        const result = JSON.parse(content);
+        const result = this._safeParseJSON(content);
         
         return {
           score: Math.max(0, Math.min(1, result.score)),
@@ -99,13 +109,25 @@ Output format (MUST):
           return {
             ...localResult,
             used: 'local-fallback',
-            rationale: `${localResult.rationale} (cloud-fallback)`
+            rationale: `${localResult.rationale} (cloud-fallback${lastError ? `: ${lastError.message}` : ''})`
           };
         }
       }
     }
   }
   
+  _safeParseJSON(text) {
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      const match = text && text.match(/\{[\s\S]*\}/);
+      if (match) {
+        try { return JSON.parse(match[0]); } catch (_) {}
+      }
+      throw new Error('Model did not return strict JSON');
+    }
+  }
+
   _buildRequestBody(config, systemPrompt, userPrompt) {
     const base = {
       max_tokens: 200,
@@ -136,7 +158,8 @@ Output format (MUST):
           }],
           generationConfig: {
             maxOutputTokens: base.max_tokens,
-            temperature: base.temperature
+            temperature: base.temperature,
+            responseMimeType: 'application/json'
           }
         };
       default:
@@ -177,7 +200,7 @@ export class LocalAdapter {
    * @returns {Promise<GradingOutput>}
    */
   async grade(input) {
-    const { gradeWithFeedback } = await import('../src/modules/scoring.js');
+    const { gradeQuestion } = await import('../src/modules/scoring.js');
     
     // Create a question object compatible with scoring.js
     const question = {
@@ -187,7 +210,7 @@ export class LocalAdapter {
       synonyms: []
     };
     
-    const feedback = gradeWithFeedback(question, input.prompt);
+    const feedback = gradeQuestion(question, input.prompt);
     
     let rationale;
     if (question.type === 'KEYWORD' && feedback.hits.length > 0) {
@@ -203,7 +226,7 @@ export class LocalAdapter {
     
     return {
       score: feedback.score,
-      correct: feedback.score >= 0.75,
+      correct: feedback.correct === true,
       rationale: rationale,
       used: 'local',
       tokens: undefined

@@ -120,6 +120,7 @@
                 <option value="OX">OX 문제</option>
                 <option value="SHORT">단답형</option>
                 <option value="KEYWORD">키워드형 (유연한 채점)</option>
+                <option value="ESSAY">서술형 (키워드 기반 부분점수)</option>
               </select>
             </div>
           </div>
@@ -321,10 +322,11 @@
           </div>
           <div>
             <label style="color:var(--muted);font-size:14px">유형</label>
-            <select id="quickType" onchange="updateQuickAddFields()">
+              <select id="quickType" onchange="updateQuickAddFields()">
               <option value="OX">OX</option>
               <option value="SHORT">단답형</option>
               <option value="KEYWORD">키워드형</option>
+              <option value="ESSAY">서술형</option>
             </select>
           </div>
           <div style="grid-column:1/-1">
@@ -404,54 +406,6 @@
   <div class="toast" id="toast" aria-live="polite"></div>
 
 <script src="https://unpkg.com/dexie@3.2.4/dist/dexie.js"></script>
-<script type="module">
-  // Import modules
-  import './ai/index.js';
-  import { migrateFromLocalStorage, showToast } from './src/modules/database.js';
-  import { runSM2PreviewTests } from './src/modules/spaced-repetition.js';
-  import { bindEvents, initServiceWorker } from './src/modules/ui-handlers.js';
-
-  // Make key functions globally available
-  import * as database from './src/modules/database.js';
-  import * as spacedRepetition from './src/modules/spaced-repetition.js';
-  import * as uiHandlers from './src/modules/ui-handlers.js';
-
-  // Expose necessary functions globally for onclick handlers
-  window.showTab = uiHandlers.showTab;
-  window.showToast = uiHandlers.showToast;
-  window.showQuestionSkeleton = uiHandlers.showQuestionSkeleton;
-  window.hideQuestionSkeleton = uiHandlers.hideQuestionSkeleton;
-
-  // Initialize theme immediately (before DOM content loaded)
-  document.addEventListener('DOMContentLoaded', function() {
-    if (typeof initTheme === 'function') initTheme();
-  });
-
-  // Initialize application
-  document.addEventListener('DOMContentLoaded', async function() {
-    try {
-      // Initialize database and run migration if needed
-      await migrateFromLocalStorage();
-      
-      // Initialize UI
-      const updateHeader = await import('./src/modules/database.js').then(m => m.updateHeader);
-      const updateDeckSelects = await import('./src/modules/database.js').then(m => m.updateDeckSelects);
-      
-      console.log('Application initialized successfully');
-      try { runSM2PreviewTests(); } catch (_) {}
-    } catch (error) {
-      console.error('Initialization error:', error);
-      showToast('앱 초기화 중 오류가 발생했습니다', 'danger');
-    }
-
-    // Bind all event handlers
-    bindEvents();
-    
-    // Initialize service worker
-    initServiceWorker();
-  });
-  
-</script>
-<script src="app.js"></script>
+<script type="module" src="app.js"></script>
 </body>
 </html>

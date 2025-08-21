@@ -12,10 +12,13 @@ export async function decideGrade(input) {
   // Record local result
   recordMetrics({ used: localResult.used, score: localResult.score });
   
-  // Check if we should escalate to cloud
-  const shouldUseCloud = localResult.score >= 0.6 && 
-                        localResult.score < 0.8 && 
-                        window.__AI_CONF?.enableCloud === true;
+  // Check if we should escalate to cloud (borderline logic)
+  const isKeyword = Array.isArray(input?.reference?.keywords) && input.reference.keywords.length > 0;
+  const isShort = !isKeyword; // OX is typically not routed here
+  const s = Number(localResult.score) || 0;
+  const borderline = (isShort && (s === 0 || (s >= 0.5 && s < 0.9))) ||
+                     (isKeyword && s > 0 && s < 0.9);
+  const shouldUseCloud = borderline && window.__AI_CONF?.enableCloud === true;
   
   if (shouldUseCloud) {
     try {

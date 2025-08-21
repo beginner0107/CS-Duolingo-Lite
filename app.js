@@ -1,3 +1,6 @@
+import { getAdapter } from './ai/index.js';
+import { gradeQuestionAsync } from './src/modules/scoring.js';
+
 // ========== 데이터베이스 설정 (IndexedDB with Dexie) ==========
 const db = new Dexie('CSStudyApp');
 const APP_SCHEMA_VERSION = 5; // App-level schema/meta version (not Dexie version)
@@ -85,7 +88,16 @@ async function getSchemaVersion() {
 }
 
 async function setSchemaVersion(v) {
-  await db.table('meta').put({ key: 'schemaVersion', value: v });
+  try {
+    await db.table('meta').put({ key: 'schemaVersion', value: v });
+  } catch (error) {
+    console.warn('Failed to set schema version:', error);
+    // If database version conflict, suggest reset
+    if (error.name === 'VersionError' || error.name === 'DatabaseClosedError') {
+      console.warn('Database version conflict detected. Consider clearing IndexedDB data.');
+    }
+    throw error;
+  }
 }
 
 async function getDailyRollup() {
@@ -221,7 +233,14 @@ async function migrateFromLocalStorage() {
 
 	} catch (error) {
 		console.error('Migration failed:', error);
-		showToast('데이터 마이그레이션 중 오류가 발생했습니다', 'danger');
+		
+		// If it's a version error, suggest database reset
+		if (error.name === 'DatabaseClosedError' || error.name === 'VersionError') {
+			console.warn('Database version conflict - you may need to reset the database');
+			showToast('데이터베이스 버전 충돌 - 브라우저 개발자 도구에서 IndexedDB를 삭제해주세요', 'danger');
+		} else {
+			showToast('데이터 마이그레이션 중 오류가 발생했습니다', 'danger');
+		}
 	}
 }
 
@@ -791,7 +810,8 @@ async function submitAnswer(userAnswer) {
   try {
     document.querySelectorAll('#qArea button').forEach(b => b.disabled = true);
   } catch (_) {}
-  const correct = checkAnswer(q, userAnswer);
+  const feedback = await gradeQuestionAsync(q, userAnswer);
+  const correct = feedback.correct === true;
   
   // Optional AI grading for enhanced feedback
   let aiResult = null;
@@ -827,7 +847,7 @@ async function submitAnswer(userAnswer) {
   await setProfile(profile);
   
   // 결과 표시
-  await showResult(correct, q, userAnswer);
+  await showResult(q, userAnswer, feedback);
   await updateProgress();
   
   // Store the question for grading
@@ -1047,17 +1067,9 @@ function matchKeywordAnswer(question, userAnswer) {
   return { passed: matched >= threshold, matched, total, threshold, perGroup };
 }
 
-async function showResult(correct, question, userAnswer) {
+async function showResult(question, userAnswer, feedback) {
   const resultArea = document.getElementById('resultArea');
-  
-  // Get detailed feedback from scoring module
-  let feedback = null;
-  try {
-    const scoringModule = await import('./src/modules/scoring.js');
-    feedback = scoringModule.gradeWithFeedback(question, userAnswer);
-  } catch (e) {
-    console.warn('Could not load scoring module for feedback:', e);
-  }
+  const correct = feedback?.correct === true;
   
   const review = await getReview();
   const state = review[question.id];
@@ -1073,8 +1085,9 @@ async function showResult(correct, question, userAnswer) {
   if (feedback) {
     const hitsStr = feedback.hits.length ? feedback.hits.join(',') : 'none';
     const missesStr = feedback.misses.length ? feedback.misses.join(',') : 'none';
+    const scoreLabel = question.type === 'ESSAY' ? `${Math.round((feedback.score || 0) * 100)}/100` : feedback.score.toFixed(2);
     html += `<div style="font-size:14px;color:var(--muted);margin-bottom:8px">`;
-    html += `Score: ${feedback.score.toFixed(2)} • Hits: {${hitsStr}} • Misses: {${missesStr}}${feedback.notes ? ' • ' + feedback.notes : ''}`;
+    html += `Score: ${scoreLabel} • Hits: {${hitsStr}} • Misses: {${missesStr}}${feedback.notes ? ' • ' + feedback.notes : ''}`;
     html += `</div>`;
   }
   
@@ -1204,7 +1217,7 @@ async function addQuestion() {
       const fuzzyToggle = document.getElementById('shortFuzzyToggle');
       question.shortFuzzy = !!(fuzzyToggle ? fuzzyToggle.checked : true);
     }
-  } else if (type === 'KEYWORD') {
+  } else if (type === 'KEYWORD' || type === 'ESSAY') {
     const keywords = document.getElementById('newKeywords').value
       .split(',')
       .map(k => k.trim())
@@ -1258,7 +1271,7 @@ function updateAnswerField() {
    keywordField.style.display = 'none';
    document.getElementById('newAnswer').placeholder = '정답을 입력하세요';
    if (fuzzyToggle) fuzzyToggle.checked = true;
- } else if (type === 'KEYWORD') {
+ } else if (type === 'KEYWORD' || type === 'ESSAY') {
    answerField.style.display = 'none';
    synonymField.style.display = 'none';
    keywordField.style.display = 'block';
@@ -1437,7 +1450,14 @@ async function updateQuestionList() {
 
 	let questions;
 	try {
-		questions = await query.orderBy('sortOrder').toArray();
+		// If we have filters, we need to get all and sort manually
+		if (deckId || type || tag || search) {
+			questions = await query.toArray();
+			questions = questions.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+		} else {
+			// If no filters, use orderBy directly on the table
+			questions = await db.questions.orderBy('sortOrder').toArray();
+		}
 	} catch (error) {
 		if (error.name === 'SchemaError' && error.message.includes('sortOrder')) {
 			// Fallback to default ordering for old schema
@@ -1462,14 +1482,136 @@ async function updateQuestionList() {
           <div class="badge">${deckName} · ${q.type}</div>
           <div style="margin-top:4px">${escapeHtml(q.prompt.substring(0, 50))}...</div>
         </div>
-        <button class="danger" onclick="deleteQuestion(${q.id})" style="padding:6px 12px">
-          삭제
-        </button>
+        <div style="display:flex; gap:8px">
+          <button class="secondary" onclick="openEditQuestion(${q.id})" style="padding:6px 12px">수정</button>
+          <button class="danger" onclick="deleteQuestion(${q.id})" style="padding:6px 12px">삭제</button>
+        </div>
       </div>
     `;
 	});
 
 	document.getElementById('questionList').innerHTML = html || '<div style="text-align:center;color:var(--muted);padding:20px">문제가 없습니다</div>';
+}
+
+// ========== 문제 수정 모달 ==========
+function createModal(html) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;z-index:9998';
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.style.cssText = 'background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;max-width:640px;width:90%;padding:16px;box-shadow:0 8px 24px rgba(0,0,0,.2);z-index:9999';
+  modal.innerHTML = html;
+  overlay.appendChild(modal);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(overlay); });
+  document.body.appendChild(overlay);
+  return overlay;
+}
+
+function closeModal(overlay) {
+  try { overlay.remove(); } catch (_) {}
+}
+
+async function openEditQuestion(id) {
+  const q = await db.questions.get(id);
+  if (!q) { showToast('문제를 찾을 수 없습니다', 'danger'); return; }
+  const decks = await getDecks();
+  const deckOptions = decks.map(d => `<option value="${d.id}" ${String(d.id)===String(q.deck)?'selected':''}>${d.name}</option>`).join('');
+  const html = `
+    <h3 style="margin-top:0">문제 수정</h3>
+    <div class="grid">
+      <div>
+        <label style="color:var(--muted);font-size:14px">덱</label>
+        <select id="editDeck">${deckOptions}</select>
+      </div>
+      <div>
+        <label style="color:var(--muted);font-size:14px">유형</label>
+        <select id="editType">
+          <option value="OX" ${q.type==='OX'?'selected':''}>OX</option>
+          <option value="SHORT" ${q.type==='SHORT'?'selected':''}>단답형</option>
+          <option value="KEYWORD" ${q.type==='KEYWORD'?'selected':''}>키워드형</option>
+          <option value="ESSAY" ${q.type==='ESSAY'?'selected':''}>서술형</option>
+        </select>
+      </div>
+      <div style="grid-column:1/-1">
+        <label style="color:var(--muted);font-size:14px">문제</label>
+        <textarea id="editPrompt">${q.prompt || ''}</textarea>
+      </div>
+      <div id="editAnswerWrap" style="display:${q.type==='OX'||q.type==='SHORT'?'block':'none'}">
+        <label style="color:var(--muted);font-size:14px">정답</label>
+        <input type="text" id="editAnswer" value="${q.answer || ''}" placeholder="true/false 또는 단답">
+      </div>
+      <div id="editSynWrap" style="display:${q.type==='SHORT'?'block':'none'}">
+        <label style="color:var(--muted);font-size:14px">동의어 (쉼표)</label>
+        <input type="text" id="editSynonyms" value="${(q.synonyms||[]).join(', ')}">
+        <div><input type="checkbox" id="editFuzzy" ${q.shortFuzzy!==false?'checked':''}> 퍼지 허용</div>
+      </div>
+      <div id="editKeyWrap" style="display:${q.type==='KEYWORD'||q.type==='ESSAY'?'block':'none'}">
+        <label style="color:var(--muted);font-size:14px">키워드 (쉼표, 항목 내 a|b 허용)</label>
+        <input type="text" id="editKeywords" value="${(q.keywords||[]).join(', ')}">
+        <label style="color:var(--muted);font-size:14px;margin-top:8px">임계값 (예: 7/10 또는 숫자)</label>
+        <input type="text" id="editKeyThr" value="${q.keywordThreshold||''}">
+      </div>
+      <div style="grid-column:1/-1">
+        <label style="color:var(--muted);font-size:14px">해설</label>
+        <textarea id="editExplain">${q.explain || ''}</textarea>
+      </div>
+      <div style="grid-column:1/-1;display:flex;justify-content:flex-end;gap:8px">
+        <button class="secondary" onclick="closeEditModal(this)">취소</button>
+        <button class="success" onclick="saveEditQuestion(${id}, this)">저장</button>
+      </div>
+    </div>
+    <script>
+      (function(){
+        const typeEl=document.getElementById('editType');
+        const ans=document.getElementById('editAnswerWrap');
+        const syn=document.getElementById('editSynWrap');
+        const key=document.getElementById('editKeyWrap');
+        typeEl.addEventListener('change',()=>{
+          const t=typeEl.value;
+          ans.style.display=(t==='OX'||t==='SHORT')?'block':'none';
+          syn.style.display=(t==='SHORT')?'block':'none';
+          key.style.display=(t==='KEYWORD'||t==='ESSAY')?'block':'none';
+        });
+      })();
+    </script>
+  `;
+  const overlay = createModal(html);
+  overlay.dataset.modal = 'edit-question';
+}
+
+function closeEditModal(el) {
+  const overlay = el.closest('.modal')?.parentElement;
+  if (overlay) closeModal(overlay);
+}
+
+async function saveEditQuestion(id, btn) {
+  try { btn.disabled = true; } catch(_){}
+  const updates = {
+    deck: Number(document.getElementById('editDeck').value),
+    type: document.getElementById('editType').value,
+    prompt: document.getElementById('editPrompt').value.trim(),
+    explain: document.getElementById('editExplain').value.trim()
+  };
+  if (updates.type === 'OX' || updates.type === 'SHORT') {
+    updates.answer = document.getElementById('editAnswer').value.trim();
+  }
+  if (updates.type === 'SHORT') {
+    const syn = document.getElementById('editSynonyms').value.split(',').map(s=>s.trim()).filter(Boolean);
+    if (syn.length) updates.synonyms = syn; else updates.synonyms = [];
+    updates.shortFuzzy = !!document.getElementById('editFuzzy').checked;
+  }
+  if (updates.type === 'KEYWORD' || updates.type === 'ESSAY') {
+    const keys = document.getElementById('editKeywords').value.split(',').map(s=>s.trim()).filter(Boolean);
+    updates.keywords = keys;
+    const thr = document.getElementById('editKeyThr').value.trim();
+    if (thr) updates.keywordThreshold = thr; else delete updates.keywordThreshold;
+  }
+  await DataStore.updateQuestion(id, updates);
+  showToast('수정되었습니다', 'success');
+  const overlay = document.querySelector('.modal-overlay[data-modal="edit-question"]');
+  if (overlay) closeModal(overlay);
+  await updateQuestionList();
 }
 
 async function updateStats() {
@@ -1897,14 +2039,14 @@ function processDelimitedText(text) {
 function validateImportRow(row) {
   const errors = [];
   const t = (row.type || '').toUpperCase();
-  if (!['OX', 'SHORT', 'KEYWORD'].includes(t)) errors.push('유형 오류');
+  if (!['OX', 'SHORT', 'KEYWORD', 'ESSAY'].includes(t)) errors.push('유형 오류');
   if (!row.deck) errors.push('덱 누락');
   if (!row.prompt) errors.push('문제 누락');
   if (t === 'OX') {
     if (!['true', 'false', 'TRUE', 'FALSE'].includes(String(row.answer))) errors.push('OX 정답 오류');
   } else if (t === 'SHORT') {
     if (!row.answer) errors.push('정답 누락');
-  } else if (t === 'KEYWORD') {
+  } else if (t === 'KEYWORD' || t === 'ESSAY') {
     if (!row.keywords || row.keywords.length === 0) errors.push('키워드 누락');
   }
   return { ...row, type: t, error: errors.join(', ') };
@@ -2037,7 +2179,7 @@ async function quickAdd() {
       if (syn.length) q.synonyms = syn;
       q.shortFuzzy = !!document.getElementById('quickFuzzy')?.checked;
     }
-  } else if (type === 'KEYWORD') {
+  } else if (type === 'KEYWORD' || type === 'ESSAY') {
     const kw = (document.getElementById('quickKeywords')?.value || '').split(',').map(s => s.trim()).filter(Boolean);
     if (!kw.length) { showToast('키워드를 입력하세요', 'warning'); return; }
     q.keywords = kw;
@@ -2439,6 +2581,8 @@ function showInstallButton() {
 // ========== 초기화 ==========
 document.addEventListener('DOMContentLoaded', async function() {
  try {
+   // Initialize theme first
+   try { if (typeof initTheme === 'function') initTheme(); } catch (_) {}
    // Initialize database and run migration if needed
    await migrateFromLocalStorage();
    
@@ -2448,6 +2592,13 @@ document.addEventListener('DOMContentLoaded', async function() {
   // Optional: guided import setup (guard if not defined)
   try { if (typeof setupGuidedImport === 'function') setupGuidedImport(); } catch (_) {}
    
+  // AI-related global assignments and event listeners
+  Object.assign(window, { saveAISettings, testAIConnection });
+  document.getElementById('aiProvider')?.addEventListener('change', updateModelOptions);
+  
+  // Load AI settings on startup
+ loadAISettings();
+  
   console.log('Application initialized successfully');
   try { runSM2PreviewTests(); } catch (_) {}
  } catch (error) {
@@ -2755,7 +2906,8 @@ async function createStreakChart(data) {
 const AI_MODELS = {
   openai: ['gpt-4o-mini','gpt-4o','gpt-3.5-turbo'],
   anthropic: ['claude-3-haiku-20240307','claude-3-sonnet-20240229'],
-  gemini: ['gemini-1.5-flash','gemini-1.5-pro']
+  // Updated to supported Gemini 2.x models
+  gemini: ['gemini-2.5-pro','gemini-2.5-flash','gemini-2.5-flash-lite','gemini-2.0-flash']
 };
 
 function updateModelOptions() {
@@ -2772,12 +2924,18 @@ function updateModelOptions() {
   }
 }
 
-function getBaseUrl(provider) {
-  return {
-    openai: 'https://api.openai.com/v1/chat/completions',
-    anthropic: 'https://api.anthropic.com/v1/messages',
-    gemini: 'https://generativelanguage.googleapis.com/v1beta/models'
-  }[provider];
+function getBaseUrl(provider, model = null) {
+  switch (provider) {
+    case 'openai':
+      return 'https://api.openai.com/v1/chat/completions';
+    case 'anthropic':
+      return 'https://api.anthropic.com/v1/messages';
+    case 'gemini':
+      const geminiModel = model || 'gemini-2.5-flash';
+      return `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent`;
+    default:
+      throw new Error(`Unsupported provider: ${provider}`);
+  }
 }
 
 function saveAISettings() {
@@ -2786,11 +2944,12 @@ function saveAISettings() {
   const model = document.getElementById('aiModel')?.value;
   
   if (provider && apiKey) {
+    const selectedModel = model || AI_MODELS[provider]?.[0];
     const config = {
       provider,
       apiKey,
-      model: model || AI_MODELS[provider]?.[0],
-      baseUrl: getBaseUrl(provider),
+      model: selectedModel,
+      baseUrl: getBaseUrl(provider, selectedModel),
       enableCloud: true
     };
     
@@ -2836,15 +2995,41 @@ function loadAISettings() {
 
 async function testAIConnection() {
   try {
-    const { getAdapter } = await import('./ai/index.js');
-    const adapter = getAdapter('cloud');
-    await adapter.grade({ prompt: 'test', reference: { answer: 'test' } });
+    // Ensure configuration is available - if not, try to create it from form values
+    if (!window.__AI_CONF || !window.__AI_CONF.apiKey) {
+      const provider = document.getElementById('aiProvider')?.value;
+      const apiKey = document.getElementById('aiApiKey')?.value;
+      const model = document.getElementById('aiModel')?.value;
+      
+      if (!provider || !apiKey) {
+        throw new Error('Provider와 API Key를 입력해주세요');
+      }
+      
+      // Temporarily set config for testing
+      const selectedModel = model || AI_MODELS[provider]?.[0];
+      window.__AI_CONF = {
+        provider,
+        apiKey,
+        model: selectedModel,
+        baseUrl: getBaseUrl(provider, selectedModel),
+        enableCloud: true
+      };
+    }
     
-    if (typeof showToast === 'function') {
+  const { getAdapter } = await import('./ai/index.js');
+  const adapter = getAdapter('cloud');
+  const res = await adapter.grade({ prompt: 'test', reference: { answer: 'test' } });
+  
+  if (typeof showToast === 'function') {
+    if (res.used === 'cloud') {
       showToast('AI 연결 성공!', 'success');
     } else {
-      console.log('AI connection successful');
+      const reason = res.rationale ? `: ${res.rationale}` : '';
+      showToast(`클라우드 연결 실패, 로컬 채점으로 대체됨${reason}`, 'warning');
     }
+  } else {
+    console.log('AI connection result:', res);
+  }
   } catch (e) {
     if (typeof showToast === 'function') {
       showToast(`연결 실패: ${e.message}`, 'danger');
@@ -2854,18 +3039,41 @@ async function testAIConnection() {
   }
 }
 
-// Wire change listener
-document.getElementById('aiProvider')?.addEventListener('change', updateModelOptions);
-
-// Expose functions to window
-Object.assign(window, { saveAISettings, testAIConnection });
+// These will be wired up in DOMContentLoaded
 
 // 전역 바인딩
+// onclick handlers and globals for HTML
+window.showTab = showTab;
 window.switchTab = switchTab;
 window.revealAnswer = revealAnswer;
+window.gradeAnswer = gradeAnswer;
 window.toggleTheme = toggleTheme;
 window.handleDragStart = handleDragStart;
 window.handleDragOver = handleDragOver;
 window.handleDrop = handleDrop;
 window.handleDragEnd = handleDragEnd;
 window.resetChartsFlag = resetChartsFlag;
+window.startSession = startSession;
+window.submitAnswer = submitAnswer;
+window.addQuestion = addQuestion;
+window.updateAnswerField = updateAnswerField;
+window.addDeck = addDeck;
+window.updateQuestionList = updateQuestionList;
+window.exportData = exportData;
+window.importData = importData;
+window.downloadImportTemplate = downloadImportTemplate;
+window.resetAll = resetAll;
+window.resetData = resetData;
+window.importValidPreviewRows = importValidPreviewRows;
+window.undoLastImport = undoLastImport;
+window.parseNaturalLanguage = parseNaturalLanguage;
+window.updateQuickAddFields = updateQuickAddFields;
+window.quickAdd = quickAdd;
+window.noteLinesToDraftQuestions = noteLinesToDraftQuestions;
+window.exportNoteAsMarkdown = exportNoteAsMarkdown;
+window.saveSettings = saveSettings;
+window.openEditQuestion = openEditQuestion;
+window.saveEditQuestion = saveEditQuestion;
+window.closeEditModal = closeEditModal;
+// Optional: expose adapter factory for console use
+window.getAdapter = getAdapter;

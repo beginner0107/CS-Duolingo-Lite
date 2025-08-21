@@ -113,7 +113,7 @@ AI 채점 기능을 사용하려면 애플리케이션의 설정 패널에서 �
 지원되는 AI 모델:
 - **OpenAI**: gpt-4o-mini, gpt-4o, gpt-3.5-turbo
 - **Anthropic**: claude-3-haiku-20240307, claude-3-sonnet-20240229  
-- **Google Gemini**: gemini-1.5-flash, gemini-1.5-pro
+- **Google Gemini**: gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite, gemini-2.0-flash
 
 **보안 참고**: API 키는 브라우저의 localStorage에만 저장되며 서버로 전송되지 않습니다.
 
@@ -150,9 +150,24 @@ cs-study-app/
 ├── manifest.json            # PWA manifest
 ├── sw.js                   # Service worker
 ├── offline.html            # Offline fallback page
+├── server/
+│   ├── index.js            # Express server entry (optional)
+│   ├── router.js           # REST routes for questions (CRUD)
+│   └── database.js         # SQLite wrapper
 ├── CLAUDE.md              # 개발 가이드라인
 └── README.md              # 이 파일
 ```
+
+### 선택 사항: SQLite API 서버 실행
+- 의존성 설치: `npm i express sqlite3 cors node-fetch`
+- 실행: `node server/index.js` (기본 포트 5174)
+- REST 엔드포인트:
+  - `GET /api/questions`
+  - `GET /api/questions/:id`
+  - `POST /api/questions`
+  - `PUT /api/questions/:id`
+  - `DELETE /api/questions/:id`
+  - `POST /api/grade/essay` (OpenAI 기반 서술형 채점)
 
 ### 주요 구성 요소
 
