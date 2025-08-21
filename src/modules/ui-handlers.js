@@ -1,5 +1,5 @@
 // ========== UI Handlers & Event Management ==========
-import { updateHeader, updateDeckSelects, updateDeckList, updateQuestionList, updateSettingsPanel, updateStats, loadNotes, submitAnswer, gradeAnswer } from './database.js';
+import { updateHeader, updateDeckSelects, updateDeckList, updateQuestionList, updateSettingsPanel, updateStats, loadNotes, submitAnswer } from './database.js';
 
 // Global session reference
 let session = null;

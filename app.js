@@ -1,6 +1,6 @@
 // ========== 데이터베이스 설정 (IndexedDB with Dexie) ==========
 const db = new Dexie('CSStudyApp');
-const APP_SCHEMA_VERSION = 4; // App-level schema/meta version (not Dexie version)
+const APP_SCHEMA_VERSION = 5; // App-level schema/meta version (not Dexie version)
 
 // Schema versioning - Version 1 (initial schema)
 db.version(1).stores({
@@ -41,6 +41,28 @@ db.version(3).stores({
 db.version(4).stores({
   notes: '++id, deckId, title, source',
   note_items: '++id, noteId, ts, text, *tags'
+});
+
+// Dexie schema v5: add sortOrder to questions
+db.version(5).stores({
+  profile: '++id, xp, streak, lastStudy',
+  decks: '++id, name, created',
+  questions: '++id, deck, type, prompt, answer, keywords, synonyms, explain, created, sortOrder, *tags',
+  review: '++id, questionId, ease, interval, due, count, created, updated',
+  meta: 'key',
+  notes: '++id, deckId, title, source',
+  note_items: '++id, noteId, ts, text, *tags'
+});
+
+// Migration hook for version 5 - add sortOrder to existing questions
+db.version(5).upgrade(async (trans) => {
+  const questions = await trans.table('questions').toArray();
+  for (let i = 0; i < questions.length; i++) {
+    const question = questions[i];
+    if (question.sortOrder === undefined) {
+      await trans.table('questions').update(question.id, { sortOrder: i });
+    }
+  }
 });
 
 // Legacy localStorage keys for migration
@@ -283,15 +305,27 @@ const DataStore = {
   },
 
   async addQuestion(question) {
-    // Get current max sortOrder
-    const maxOrder = await db.questions.orderBy('sortOrder').reverse().first();
-    const nextOrder = (maxOrder?.sortOrder ?? 0) + 1;
-    
-    return await db.questions.add({
-      ...question,
-      created: new Date(),
-      sortOrder: nextOrder
-    });
+    try {
+      // Get current max sortOrder
+      const maxOrder = await db.questions.orderBy('sortOrder').reverse().first();
+      const nextOrder = (maxOrder?.sortOrder ?? 0) + 1;
+      
+      return await db.questions.add({
+        ...question,
+        created: new Date(),
+        sortOrder: nextOrder
+      });
+    } catch (error) {
+      if (error.name === 'SchemaError' && error.message.includes('sortOrder')) {
+        // Fallback: add without sortOrder for old schema
+        console.warn('Database schema outdated, adding question without sortOrder');
+        return await db.questions.add({
+          ...question,
+          created: new Date()
+        });
+      }
+      throw error;
+    }
   },
 
   async updateQuestion(id, updates) {
@@ -992,6 +1026,16 @@ function matchKeywordAnswer(question, userAnswer) {
 
 async function showResult(correct, question, userAnswer) {
   const resultArea = document.getElementById('resultArea');
+  
+  // Get detailed feedback from scoring module
+  let feedback = null;
+  try {
+    const scoringModule = await import('./src/modules/scoring.js');
+    feedback = scoringModule.gradeWithFeedback(question, userAnswer);
+  } catch (e) {
+    console.warn('Could not load scoring module for feedback:', e);
+  }
+  
   const review = await getReview();
   const state = review[question.id];
   const preview = {
@@ -1001,6 +1045,15 @@ async function showResult(correct, question, userAnswer) {
     easy: simulateNextDueDate(state, 3)
   };
   let html = '<div class="result ' + (correct ? 'ok' : 'ng') + '">';
+  
+  // Add compact feedback line if available
+  if (feedback) {
+    const hitsStr = feedback.hits.length ? feedback.hits.join(',') : 'none';
+    const missesStr = feedback.misses.length ? feedback.misses.join(',') : 'none';
+    html += `<div style="font-size:14px;color:var(--muted);margin-bottom:8px">`;
+    html += `Score: ${feedback.score.toFixed(2)} • Hits: {${hitsStr}} • Misses: {${missesStr}}${feedback.notes ? ' • ' + feedback.notes : ''}`;
+    html += `</div>`;
+  }
   
   if (correct) {
     html += '<h3>✅ 정답!</h3>';
@@ -1355,7 +1408,19 @@ async function updateQuestionList() {
 		);
 	}
 
-	const [questions, decks] = await Promise.all([query.orderBy('sortOrder').toArray(), getDecks()]);
+	let questions;
+	try {
+		questions = await query.orderBy('sortOrder').toArray();
+	} catch (error) {
+		if (error.name === 'SchemaError' && error.message.includes('sortOrder')) {
+			// Fallback to default ordering for old schema
+			console.warn('Database schema outdated, using default ordering');
+			questions = await query.toArray();
+		} else {
+			throw error;
+		}
+	}
+	const [, decks] = await Promise.all([Promise.resolve(), getDecks()]);
 	const deckMap = new Map(decks.map(d => [d.id, d.name]));
 
 	let html = '';
