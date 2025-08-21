@@ -1,9 +1,17 @@
 import { getAdapter } from './ai/index.js';
+import { openEditQuestion as uiOpenEditQuestion, closeEditModal as uiCloseEditModal, saveEditQuestion as uiSaveEditQuestion, showTab as uiShowTab, bindEvents } from './src/modules/ui-handlers.js';
 import { gradeQuestionAsync } from './src/modules/scoring.js';
+
+// Immediately bind critical functions for HTML onclick handlers
+// This ensures they're available even before DOMContentLoaded
+window.showTab = uiShowTab;
+window.openEditQuestion = uiOpenEditQuestion;
+window.saveEditQuestion = uiSaveEditQuestion;
+window.closeEditModal = uiCloseEditModal;
 
 // ========== 데이터베이스 설정 (IndexedDB with Dexie) ==========
 const db = new Dexie('CSStudyApp');
-const APP_SCHEMA_VERSION = 5; // App-level schema/meta version (not Dexie version)
+const APP_SCHEMA_VERSION = 51; // App-level schema/meta version (not Dexie version)
 
 // Schema versioning - Version 1 (initial schema)
 db.version(1).stores({
@@ -57,6 +65,32 @@ db.version(5).stores({
   note_items: '++id, noteId, ts, text, *tags'
 });
 
+// Dexie schema v51: compatibility fix for existing databases
+db.version(51).stores({
+  profile: '++id, xp, streak, lastStudy',
+  decks: '++id, name, created',
+  questions: '++id, deck, type, prompt, answer, keywords, synonyms, explain, created, sortOrder, *tags',
+  review: '++id, questionId, ease, interval, due, count, created, updated',
+  meta: 'key',
+  notes: '++id, deckId, title, source, content, createdAt, updatedAt',
+  note_items: '++id, noteId, ts, text, *tags'
+});
+
+// Migration hook for version 51 - add missing fields to notes
+db.version(51).upgrade(async (trans) => {
+  const notes = await trans.table('notes').toArray();
+  for (const note of notes) {
+    const updates = {};
+    if (!note.content) updates.content = '';
+    if (!note.createdAt) updates.createdAt = new Date();
+    if (!note.updatedAt) updates.updatedAt = new Date();
+    
+    if (Object.keys(updates).length > 0) {
+      await trans.table('notes').update(note.id, updates);
+    }
+  }
+});
+
 // Migration hook for version 5 - add sortOrder to existing questions
 db.version(5).upgrade(async (trans) => {
   const questions = await trans.table('questions').toArray();
@@ -97,6 +131,32 @@ async function setSchemaVersion(v) {
       console.warn('Database version conflict detected. Consider clearing IndexedDB data.');
     }
     throw error;
+  }
+}
+
+async function resetDatabase() {
+  console.log('Resetting database...');
+  try {
+    // Close the database first
+    if (db.isOpen()) {
+      db.close();
+    }
+    
+    // Delete the database completely
+    await Dexie.delete('CSStudyApp');
+    console.log('Database deleted successfully');
+    
+    // Wait a bit to ensure deletion is complete
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Force a page reload to restart with fresh database
+    console.log('Database reset completed, reloading page...');
+    window.location.reload();
+    
+  } catch (error) {
+    console.error('Database reset failed:', error);
+    // If reset fails, suggest manual cleanup
+    throw new Error('Database reset failed. Please manually clear IndexedDB data in browser developer tools.');
   }
 }
 
@@ -161,10 +221,18 @@ function setDailyStats(stats) {
 // ========== 데이터 마이그레이션 ==========
 async function migrateFromLocalStorage() {
 	try {
-		// Idempotent check using meta.schemaVersion
-		const currentMetaVersion = await getSchemaVersion();
-		if (currentMetaVersion && currentMetaVersion >= APP_SCHEMA_VERSION) {
-			return;
+		// Force database reset if version conflict exists
+		try {
+			const currentMetaVersion = await getSchemaVersion();
+			if (currentMetaVersion && currentMetaVersion >= APP_SCHEMA_VERSION) {
+				return;
+			}
+		} catch (error) {
+			if (error.name === 'DatabaseClosedError' || error.name === 'VersionError') {
+				console.warn('Database version conflict detected, forcing reset...');
+				await resetDatabase();
+				console.log('Database reset completed, proceeding with fresh initialization');
+			}
 		}
 
 		console.log('Starting localStorage to IndexedDB migration...');
@@ -236,8 +304,14 @@ async function migrateFromLocalStorage() {
 		
 		// If it's a version error, suggest database reset
 		if (error.name === 'DatabaseClosedError' || error.name === 'VersionError') {
-			console.warn('Database version conflict - you may need to reset the database');
-			showToast('데이터베이스 버전 충돌 - 브라우저 개발자 도구에서 IndexedDB를 삭제해주세요', 'danger');
+			console.warn('Database version conflict - attempting database reset');
+			try {
+				await resetDatabase();
+				showToast('데이터베이스를 초기화했습니다. 페이지를 새로고침해주세요.', 'warning');
+			} catch (resetError) {
+				console.error('Database reset failed:', resetError);
+				showToast('데이터베이스 버전 충돌 - 브라우저 개발자 도구에서 IndexedDB를 삭제해주세요', 'danger');
+			}
 		} else {
 			showToast('데이터 마이그레이션 중 오류가 발생했습니다', 'danger');
 		}
@@ -607,7 +681,7 @@ async function startSession() {
   const today = todayStr();
 
   // Classify questions by category
-  const inDeck = questions.filter(q => q.deck === deckId);
+  const inDeck = questions.filter(q => String(q.deck) === String(deckId));
   const seenIds = new Set(Object.keys(review).map(Number));
 
   const isDue = (q) => review[q.id]?.due && review[q.id].due <= today;
@@ -1927,8 +2001,8 @@ async function showTab(e, tabName) {
  } else if (tabName === 'stats') {
    await updateStats();
  } else if (tabName === 'notes') {
-   await updateDeckSelects();
-   await loadNotes();
+   // Note: notes functionality is now handled by ui-handlers.js
+   // This will be handled by the ui-handlers showTab function
  }
 }
 
@@ -2382,7 +2456,7 @@ async function exportNoteAsMarkdown() {
 
   const items = await db.note_items.where('noteId').equals(currentNoteId).sortBy('ts');
   const decks = await getDecks();
-  const deck = decks.find(d => d.id === note.deckId);
+  const deck = decks.find(d => Number(d.id) === Number(note.deckId));
 
   let markdown = `# ${note.title}\n\n`;
   if (deck) {
@@ -2455,7 +2529,7 @@ async function openNote(noteId) {
 
   document.getElementById('noteTitle').textContent = currentNote.title;
   const decks = await getDecks();
-  const deckName = (decks.find(d => d.id === currentNote.deckId) || {}).name || '알 수 없음';
+  const deckName = (decks.find(d => Number(d.id) === Number(currentNote.deckId)) || {}).name || '알 수 없음';
   document.getElementById('noteDeckName').textContent = deckName;
 
   await renderNoteItems();
@@ -2595,6 +2669,11 @@ document.addEventListener('DOMContentLoaded', async function() {
   // AI-related global assignments and event listeners
   Object.assign(window, { saveAISettings, testAIConnection });
   document.getElementById('aiProvider')?.addEventListener('change', updateModelOptions);
+  
+  // Initialize UI handlers and events
+  bindEvents();
+  
+  // Note: Global functions are already bound at module load time for immediate HTML access
   
   // Load AI settings on startup
  loadAISettings();
@@ -3039,41 +3118,41 @@ async function testAIConnection() {
   }
 }
 
-// These will be wired up in DOMContentLoaded
-
-// 전역 바인딩
-// onclick handlers and globals for HTML
-window.showTab = showTab;
+// Additional global bindings for immediate HTML compatibility
+// Critical functions are bound at module load time for instant availability
 window.switchTab = switchTab;
 window.revealAnswer = revealAnswer;
 window.gradeAnswer = gradeAnswer;
-window.toggleTheme = toggleTheme;
-window.handleDragStart = handleDragStart;
-window.handleDragOver = handleDragOver;
-window.handleDrop = handleDrop;
-window.handleDragEnd = handleDragEnd;
-window.resetChartsFlag = resetChartsFlag;
-window.startSession = startSession;
 window.submitAnswer = submitAnswer;
+window.startSession = startSession;
 window.addQuestion = addQuestion;
-window.updateAnswerField = updateAnswerField;
 window.addDeck = addDeck;
-window.updateQuestionList = updateQuestionList;
 window.exportData = exportData;
 window.importData = importData;
-window.downloadImportTemplate = downloadImportTemplate;
 window.resetAll = resetAll;
+window.saveSettings = saveSettings;
+window.testAIConnection = testAIConnection;
+window.saveAISettings = saveAISettings;
+window.deleteDeck = deleteDeck;
+window.deleteQuestion = deleteQuestion;
+
+// Additional functions for HTML compatibility
+window.updateAnswerField = updateAnswerField;
+window.updateHeader = updateHeader;
+window.updateDeckSelects = updateDeckSelects;
+window.updateDeckList = updateDeckList;
+window.updateQuestionList = updateQuestionList;
+window.updateSettingsPanel = updateSettingsPanel;
+window.updateStats = updateStats;
+window.downloadImportTemplate = downloadImportTemplate;
 window.resetData = resetData;
 window.importValidPreviewRows = importValidPreviewRows;
 window.undoLastImport = undoLastImport;
 window.parseNaturalLanguage = parseNaturalLanguage;
 window.updateQuickAddFields = updateQuickAddFields;
 window.quickAdd = quickAdd;
-window.noteLinesToDraftQuestions = noteLinesToDraftQuestions;
-window.exportNoteAsMarkdown = exportNoteAsMarkdown;
-window.saveSettings = saveSettings;
-window.openEditQuestion = openEditQuestion;
-window.saveEditQuestion = saveEditQuestion;
-window.closeEditModal = closeEditModal;
-// Optional: expose adapter factory for console use
-window.getAdapter = getAdapter;
+window.toggleTheme = toggleTheme;
+window.handleDragStart = handleDragStart;
+window.handleDragOver = handleDragOver;
+window.handleDrop = handleDrop;
+window.handleDragEnd = handleDragEnd;

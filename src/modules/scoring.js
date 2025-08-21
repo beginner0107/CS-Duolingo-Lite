@@ -328,33 +328,31 @@ export function gradeQuestion(q, userAnswer) {
   return { correct: false, score: 0, hits: [], misses: [], notes: 'Unknown question type' };
 }
 
-// Async version that can call server-side grading for ESSAY
+// Async version that uses local AI modules for advanced grading
 export async function gradeQuestionAsync(q, userAnswer) {
   if (q?.type === 'ESSAY') {
     try {
-      const apiBase = (typeof window !== 'undefined' && window.__API_BASE__) || 'http://localhost:5174';
-      const prov = (typeof window !== 'undefined' && window.__AI_CONF && window.__AI_CONF.provider) ? window.__AI_CONF.provider : undefined;
-      const mdl = (typeof window !== 'undefined' && window.__AI_CONF && window.__AI_CONF.model) ? window.__AI_CONF.model : undefined;
-      const resp = await fetch(`${apiBase}/api/grade/essay`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question: q.prompt,
-          reference: q.answer || q.reference || '',
-          student: userAnswer,
-          provider: prov,
-          model: mdl
-        })
-      });
-      if (!resp.ok) {
-        throw new Error(`Essay grade HTTP ${resp.status}`);
-      }
-      const data = await resp.json();
-      const score100 = Number.isFinite(data.score) ? Math.max(0, Math.min(100, Math.round(data.score))) : 0;
-      const score01 = score100 / 100;
-      const correct = score01 >= ESSAY_PASS;
-      return { correct, score: score01, hits: [], misses: [], notes: data.feedback || '' };
+      // Use local AI modules instead of external server
+      const { decideGrade } = await import('../../ai/router.js');
+      
+      const input = {
+        prompt: userAnswer,
+        reference: {
+          answer: q.answer || q.reference || '',
+          keywords: q.keywords || []
+        }
+      };
+      
+      const result = await decideGrade(input);
+      return { 
+        correct: result.correct, 
+        score: result.score, 
+        hits: [], 
+        misses: [], 
+        notes: result.rationale || 'AI graded response' 
+      };
     } catch (e) {
+      console.warn('AI grading failed, falling back to local scoring:', e);
       // Fallback: treat as KEYWORD if keywords exist
       if (Array.isArray(q.keywords) && q.keywords.length) {
         return gradeQuestion({ ...q, type: 'KEYWORD' }, userAnswer);

@@ -1,5 +1,8 @@
 // ========== UI Handlers & Event Management ==========
-import { updateHeader, updateDeckSelects, updateDeckList, updateQuestionList, updateSettingsPanel, updateStats, loadNotes, submitAnswer } from './database.js';
+import { getDecks, getQuestion, updateQuestion, getNotes, getNote, addNote, updateNote, deleteNote as deleteNoteRow } from './database.js';
+
+// UI update functions are available globally from app.js
+// updateHeader, updateDeckSelects, updateDeckList, updateQuestionList, updateSettingsPanel, updateStats
 
 // Global session reference
 let session = null;
@@ -24,16 +27,17 @@ export async function showTab(e, tabName) {
  newTab.style.opacity = '0';
  
  if (tabName === 'manage') {
-   await updateDeckList();
-   await updateQuestionList();
-   await updateSettingsPanel();
+   await window.updateDeckList();
+   await window.updateQuestionList();
+   await window.updateSettingsPanel();
  } else if (tabName === 'stats') {
    // Reset charts flag to allow re-initialization
    if (typeof resetChartsFlag === 'function') resetChartsFlag();
-   await updateStats();
+   await window.updateStats();
  } else if (tabName === 'notes') {
-   await updateDeckSelects();
-   await loadNotes();
+   await refreshNoteDeckFilters();
+   await renderNotesList();
+   updateSaveEnabled();
  }
  
  // Fade in new tab
@@ -54,11 +58,11 @@ export function switchTab(tab) {
   }
 
   if (tab === 'manage') {
-    updateDeckList(); updateQuestionList(); updateSettingsPanel();
+    window.updateDeckList(); window.updateQuestionList(); window.updateSettingsPanel();
   } else if (tab === 'stats') {
-    updateStats();
+    window.updateStats();
   } else if (tab === 'notes') {
-    updateDeckSelects(); loadNotes();
+    refreshNoteDeckFilters(); renderNotesList();
   }
 }
 
@@ -198,10 +202,9 @@ export function bindEvents() {
     if (e.key === 'Escape' || e.code === 'Escape') {
       e.preventDefault();
       
-      // Check for modals or active prompts first
-      const modal = document.querySelector('.modal, .popup, [role="dialog"]');
-      if (modal) {
-        modal.style.display = 'none';
+      // Close edit modal if open
+      if (document.getElementById('editModal')?.style.display !== 'none') {
+        closeEditModal();
         return;
       }
       
@@ -226,6 +229,291 @@ export function bindEvents() {
       }
     }
   });
+
+  // Notes tab: wire buttons and inputs
+  window.newNote = newNote;
+  const saveBtn = document.querySelector('#notesTab .card:nth-of-type(2) button.success');
+  if (saveBtn) saveBtn.addEventListener('click', () => saveNote());
+  const searchEl = document.getElementById('qNoteSearch');
+  const deckFilterEl = document.getElementById('qNoteDeckFilter');
+  if (searchEl) searchEl.addEventListener('input', debounce(renderNotesList, 200));
+  if (deckFilterEl) deckFilterEl.addEventListener('change', renderNotesList);
+  const titleEl = document.getElementById('noteTitle');
+  const contentEl = document.getElementById('noteTextarea');
+  if (titleEl) titleEl.addEventListener('input', updateSaveEnabled);
+  if (contentEl) contentEl.addEventListener('input', updateSaveEnabled);
+}
+
+// Notes UI state
+let currentNoteId = null;
+
+function debounce(fn, ms) {
+  let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
+function updateSaveEnabled() {
+  const titleEl = document.getElementById('noteTitle');
+  const contentEl = document.getElementById('noteTextarea');
+  const saveBtn = document.querySelector('#notesTab .card:nth-of-type(2) button.success');
+  if (!saveBtn) return;
+  const ok = (titleEl?.value || '').trim() && (contentEl?.value || '').trim();
+  saveBtn.disabled = !ok;
+}
+
+async function renderNotesList() {
+  const search = document.getElementById('qNoteSearch')?.value || '';
+  const deckId = document.getElementById('qNoteDeckFilter')?.value || '';
+  const notes = await getNotes({ search, deckId });
+  const list = document.getElementById('notesList');
+  let html = '';
+  notes.forEach(n => {
+    const dateStr = n.updatedAt ? new Date(n.updatedAt).toLocaleString() : '';
+    html += `
+      <div class="question-item" style="align-items:center">
+        <div style="flex:1">
+          <div style="font-weight:600">${escapeHtml(n.title || '(제목 없음)')}</div>
+          <div style="font-size:12px;color:var(--muted)">${escapeHtml(n.source || '')} ${dateStr ? '• '+dateStr : ''}</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="secondary" data-note-edit="${n.id}">수정</button>
+          <button class="danger" data-note-del="${n.id}">삭제</button>
+        </div>
+      </div>`;
+  });
+  list.innerHTML = html || '<div style="text-align:center;color:var(--muted);padding:20px">노트가 없습니다</div>';
+  // Wire edit/delete buttons
+  list.querySelectorAll('[data-note-edit]').forEach(btn => btn.addEventListener('click', () => editNote(btn.getAttribute('data-note-edit'))));
+  list.querySelectorAll('[data-note-del]').forEach(btn => btn.addEventListener('click', () => deleteNote(btn.getAttribute('data-note-del'))));
+}
+
+async function refreshNoteDeckFilters() {
+  const decks = await getDecks();
+  const build = (selId) => {
+    const el = document.getElementById(selId);
+    if (!el) return;
+    const cur = el.value;
+    el.innerHTML = ['<option value="">전체</option>'].concat(decks.map(d => `<option value="${d.id}">${d.name}</option>`)).join('');
+    if (cur) el.value = cur;
+  };
+  build('qNoteDeckFilter');
+  const notesSel = document.getElementById('deckSelectNotes');
+  if (notesSel) {
+    const cur = notesSel.value;
+    notesSel.innerHTML = decks.map(d => `<option value="${d.id}">${d.name}</option>`).join('');
+    if (cur) notesSel.value = cur;
+  }
+}
+
+export async function newNote() {
+  currentNoteId = null;
+  await refreshNoteDeckFilters();
+  const titleEl = document.getElementById('noteTitle');
+  const sourceEl = document.getElementById('noteSource');
+  const contentEl = document.getElementById('noteTextarea');
+  titleEl.value = '';
+  sourceEl.value = '';
+  contentEl.value = '';
+  updateSaveEnabled();
+}
+
+async function editNote(id) {
+  const n = await getNote(id);
+  if (!n) return;
+  currentNoteId = n.id;
+  await refreshNoteDeckFilters();
+  document.getElementById('deckSelectNotes').value = n.deckId || '';
+  document.getElementById('noteTitle').value = n.title || '';
+  document.getElementById('noteSource').value = n.source || '';
+  document.getElementById('noteTextarea').value = n.content || '';
+  updateSaveEnabled();
+}
+
+export async function saveNote() {
+  const deckId = document.getElementById('deckSelectNotes')?.value || '';
+  const title = (document.getElementById('noteTitle')?.value || '').trim();
+  const source = (document.getElementById('noteSource')?.value || '').trim();
+  const content = (document.getElementById('noteTextarea')?.value || '').trim();
+  if (!title || !content) { showToast('제목과 내용을 입력하세요', 'warning'); return; }
+  if (!currentNoteId) {
+    const id = await addNote({ deckId, title, source, content });
+    currentNoteId = id;
+    showToast('노트가 저장되었습니다', 'success');
+  } else {
+    await updateNote(currentNoteId, { deckId, title, source, content });
+    showToast('노트가 업데이트되었습니다', 'success');
+  }
+  await renderNotesList();
+}
+
+async function deleteNote(id) {
+  if (!confirm('이 노트를 삭제하시겠습니까?')) return;
+  await deleteNoteRow(Number(id));
+  if (currentNoteId === Number(id)) {
+    currentNoteId = null;
+    await newNote();
+  }
+  await renderNotesList();
+  showToast('삭제되었습니다', 'success');
+}
+
+// ========== Accessible Edit Modal ==========
+let lastFocusedTrigger = null;
+
+function getFocusableElements(container) {
+  return Array.from(container.querySelectorAll('a[href], button, textarea, input, select, [tabindex]:not([tabindex="-1"])'))
+    .filter(el => !el.hasAttribute('disabled') && el.tabIndex !== -1 && el.offsetParent !== null);
+}
+
+export async function openEditQuestion(id) {
+  try {
+    lastFocusedTrigger = document.activeElement;
+  } catch (_) {}
+
+  const q = await getQuestion(id);
+  const decks = await getDecks();
+  const deckOptions = decks.map(d => `<option value="${d.id}" ${String(d.id)===String(q.deck)?'selected':''}>${d.name}</option>`).join('');
+
+  const body = document.getElementById('editModalBody');
+  body.innerHTML = `
+    <div class="grid">
+      <div>
+        <label style="color:var(--muted);font-size:14px">덱</label>
+        <select id="editDeck">${deckOptions}</select>
+      </div>
+      <div>
+        <label style="color:var(--muted);font-size:14px">유형</label>
+        <select id="editType">
+          <option value="OX" ${q.type==='OX'?'selected':''}>OX</option>
+          <option value="SHORT" ${q.type==='SHORT'?'selected':''}>단답형</option>
+          <option value="KEYWORD" ${q.type==='KEYWORD'?'selected':''}>키워드형</option>
+          <option value="ESSAY" ${q.type==='ESSAY'?'selected':''}>서술형</option>
+        </select>
+      </div>
+      <div style="grid-column:1/-1">
+        <label style="color:var(--muted);font-size:14px">문제</label>
+        <textarea id="editPrompt">${q.prompt||''}</textarea>
+      </div>
+      <div id="editAnswerWrap" style="display:${q.type==='OX'||q.type==='SHORT'?'block':'none'}">
+        <label style="color:var(--muted);font-size:14px">정답</label>
+        <input type="text" id="editAnswer" value="${q.answer||''}" placeholder="true/false 또는 단답" />
+      </div>
+      <div id="editSynWrap" style="display:${q.type==='SHORT'?'block':'none'}">
+        <label style="color:var(--muted);font-size:14px">동의어 (쉼표)</label>
+        <input type="text" id="editSynonyms" value="${(q.synonyms||[]).join(', ')}" />
+        <div><input type="checkbox" id="editFuzzy" ${q.shortFuzzy!==false?'checked':''}/> 퍼지 허용</div>
+      </div>
+      <div id="editKeyWrap" style="display:${q.type==='KEYWORD'||q.type==='ESSAY'?'block':'none'}">
+        <label style="color:var(--muted);font-size:14px">키워드 (쉼표, 항목 내 a|b 허용)</label>
+        <input type="text" id="editKeywords" value="${(q.keywords||[]).join(', ')}" />
+        <label style="color:var(--muted);font-size:14px;margin-top:8px">임계값 (예: 7/10 또는 숫자)</label>
+        <input type="text" id="editKeyThr" value="${q.keywordThreshold||''}" />
+      </div>
+      <div style="grid-column:1/-1">
+        <label style="color:var(--muted);font-size:14px">해설</label>
+        <textarea id="editExplain">${q.explain||''}</textarea>
+      </div>
+    </div>
+  `;
+
+  // Toggle sections on type change
+  const typeEl = document.getElementById('editType');
+  typeEl.addEventListener('change', () => {
+    const t = typeEl.value;
+    document.getElementById('editAnswerWrap').style.display = (t==='OX'||t==='SHORT') ? 'block' : 'none';
+    document.getElementById('editSynWrap').style.display = (t==='SHORT') ? 'block' : 'none';
+    document.getElementById('editKeyWrap').style.display = (t==='KEYWORD'||t==='ESSAY') ? 'block' : 'none';
+  });
+
+  const overlay = document.getElementById('editOverlay');
+  const modal = document.getElementById('editModal');
+  const closeBtn = document.getElementById('editModalClose');
+  const cancelBtn = document.getElementById('editModalCancel');
+  const saveBtn = document.getElementById('editModalSave');
+
+  // Wire buttons
+  overlay.onclick = () => closeEditModal();
+  closeBtn.onclick = () => closeEditModal();
+  cancelBtn.onclick = () => closeEditModal();
+  saveBtn.onclick = () => saveEditQuestion(id);
+
+  // Show and trap focus
+  overlay.style.display = 'block';
+  modal.style.display = 'flex';
+  document.body.classList.add('modal-open');
+  modal.setAttribute('aria-hidden', 'false');
+  modal.focus();
+
+  // Focus the first focusable control inside modal
+  const focusables = getFocusableElements(modal);
+  if (focusables.length) setTimeout(() => focusables[0].focus(), 0);
+
+  // Focus trap
+  function onKeydown(e){
+    if (e.key !== 'Tab') return;
+    const els = getFocusableElements(modal);
+    if (!els.length) return;
+    const first = els[0];
+    const last = els[els.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+  modal.addEventListener('keydown', onKeydown);
+  modal.dataset.focusTrap = 'true';
+}
+
+export function closeEditModal() {
+  const overlay = document.getElementById('editOverlay');
+  const modal = document.getElementById('editModal');
+  overlay.style.display = 'none';
+  modal.style.display = 'none';
+  modal.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('modal-open');
+  // Restore focus
+  try { if (lastFocusedTrigger && typeof lastFocusedTrigger.focus === 'function') lastFocusedTrigger.focus(); } catch(_){}
+}
+
+export async function saveEditQuestion(id) {
+  console.log('saveEditQuestion called with id:', id);
+  const updates = {
+    deck: Number(document.getElementById('editDeck').value),
+    type: document.getElementById('editType').value,
+    prompt: document.getElementById('editPrompt').value.trim(),
+    explain: document.getElementById('editExplain').value.trim()
+  };
+  console.log('Updates to save:', updates);
+  if (!updates.prompt) { showToast('문제를 입력하세요', 'warning'); return; }
+  if (updates.type === 'OX' || updates.type === 'SHORT') {
+    updates.answer = (document.getElementById('editAnswer').value || '').trim();
+    if (!updates.answer) { showToast('정답을 입력하세요', 'warning'); return; }
+  }
+  if (updates.type === 'SHORT') {
+    const syn = (document.getElementById('editSynonyms').value || '').split(',').map(s=>s.trim()).filter(Boolean);
+    updates.synonyms = syn;
+    updates.shortFuzzy = !!document.getElementById('editFuzzy').checked;
+  }
+  if (updates.type === 'KEYWORD' || updates.type === 'ESSAY') {
+    const keys = (document.getElementById('editKeywords').value || '').split(',').map(s=>s.trim()).filter(Boolean);
+    if (!keys.length) { showToast('키워드를 입력하세요', 'warning'); return; }
+    updates.keywords = keys;
+    const thr = (document.getElementById('editKeyThr').value || '').trim();
+    if (thr) updates.keywordThreshold = thr; else delete updates.keywordThreshold;
+  }
+
+  try {
+    console.log('Calling updateQuestion...');
+    const result = await updateQuestion(id, updates);
+    console.log('updateQuestion result:', result);
+    
+    console.log('Calling updateQuestionList...');
+    await window.updateQuestionList();
+    console.log('updateQuestionList completed');
+    
+    showToast('수정되었습니다', 'success');
+    closeEditModal();
+  } catch (error) {
+    console.error('Error saving question:', error);
+    showToast('저장 중 오류가 발생했습니다: ' + error.message, 'danger');
+  }
 }
 
 // ========== Service Worker & PWA ==========

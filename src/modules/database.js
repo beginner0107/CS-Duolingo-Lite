@@ -1,6 +1,6 @@
 // ========== 데이터베이스 설정 (IndexedDB with Dexie) ==========
 const db = new Dexie('CSStudyApp');
-const APP_SCHEMA_VERSION = 4; // App-level schema/meta version (not Dexie version)
+const APP_SCHEMA_VERSION = 51; // App-level schema/meta version (not Dexie version)
 
 // Schema versioning - Version 1 (initial schema)
 db.version(1).stores({
@@ -44,6 +44,32 @@ db.version(3).stores({
 db.version(4).stores({
   notes: '++id, deckId, title, source',
   note_items: '++id, noteId, ts, text, *tags'
+});
+
+// Dexie schema v51: compatibility fix for existing databases
+db.version(51).stores({
+  profile: '++id, xp, streak, lastStudy',
+  decks: '++id, name, created',
+  questions: '++id, deck, type, prompt, answer, keywords, synonyms, explain, created, sortOrder, *tags',
+  review: '++id, questionId, ease, interval, due, count, created, updated',
+  meta: 'key',
+  notes: '++id, deckId, title, source, content, createdAt, updatedAt',
+  note_items: '++id, noteId, ts, text, *tags'
+});
+
+// Migration hook for version 51 - add missing fields to notes
+db.version(51).upgrade(async (trans) => {
+  const notes = await trans.table('notes').toArray();
+  for (const note of notes) {
+    const updates = {};
+    if (!note.content) updates.content = '';
+    if (!note.createdAt) updates.createdAt = new Date();
+    if (!note.updatedAt) updates.updatedAt = new Date();
+    
+    if (Object.keys(updates).length > 0) {
+      await trans.table('notes').update(note.id, updates);
+    }
+  }
 });
 
 // Legacy localStorage keys for migration
@@ -223,6 +249,14 @@ export async function setQuestions(questions) {
   throw new Error('setQuestions deprecated - use individual question operations');
 }
 
+export async function getQuestion(id) {
+  return await db.questions.get(Number(id));
+}
+
+export async function updateQuestion(id, updates) {
+  return await db.questions.update(Number(id), { ...updates, updated: new Date() });
+}
+
 export async function getProfile() {
   return await db.profile.toCollection().first() || { xp: 0, streak: 0, lastStudy: null };
 }
@@ -247,6 +281,55 @@ export async function setReview(questionId, reviewData) {
   } else {
     await db.review.add({ ...reviewData, questionId, created: new Date(), updated: new Date() });
   }
+}
+
+// ========== Notes CRUD ==========
+export async function getNotes(filter = {}) {
+  const { search = '', deckId = '' } = filter;
+  let coll = db.notes.toCollection();
+  if (deckId) {
+    coll = db.notes.where('deckId').equals(Number(deckId));
+  }
+  let notes = await coll.toArray();
+  const q = (search || '').toLowerCase();
+  if (q) {
+    notes = notes.filter(n =>
+      (n.title || '').toLowerCase().includes(q) ||
+      (n.source || '').toLowerCase().includes(q) ||
+      (n.content || '').toLowerCase().includes(q)
+    );
+  }
+  // Sort by updatedAt desc, then createdAt desc, then id desc
+  notes.sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0) || (b.id - a.id));
+  return notes;
+}
+
+export async function getNote(id) {
+  return await db.notes.get(Number(id));
+}
+
+export async function addNote(note) {
+  const now = new Date();
+  const row = {
+    deckId: note.deckId ? Number(note.deckId) : null,
+    title: note.title || '',
+    source: note.source || '',
+    content: note.content || '',
+    createdAt: now,
+    updatedAt: now
+  };
+  const id = await db.notes.add(row);
+  return id;
+}
+
+export async function updateNote(id, patch) {
+  const row = { ...patch, updatedAt: new Date() };
+  return await db.notes.update(Number(id), row);
+}
+
+export async function deleteNote(id) {
+  await db.notes.delete(Number(id));
+  try { await db.note_items.where('noteId').equals(Number(id)).delete(); } catch (_) {}
 }
 
 // Export constants and db instance
