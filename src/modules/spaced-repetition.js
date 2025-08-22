@@ -1,4 +1,5 @@
-import { todayStr } from './database.js';
+// todayStr lives in statistics module; adjust import after refactor
+import { todayStr } from './statistics.js';
 import { checkAnswer } from './scoring.js';
 
 // ========== SM-2 Algorithm & Scheduling ==========
@@ -57,6 +58,11 @@ export function nextSchedule(correct, state, grade = null) {
   return state;
 }
 
+// Backward-compatible alias expected by older session module
+export function nextReview(state, grade) {
+  return nextSchedule(true, state, grade);
+}
+
 export function simulateNextInterval(state, grade) {
   const copy = state ? { ...state } : { ease: 2.5, interval: 0, due: todayStr(), count: 0 };
   const res = nextSchedule(true, copy, grade);
@@ -94,4 +100,3 @@ export function runSM2PreviewTests() {
     console.assert(d1 === d2, `simulateNextDueDate mismatch in case ${idx}: ${d1} != ${d2}`);
   });
 }
-

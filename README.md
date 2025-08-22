@@ -1,10 +1,20 @@
 # CS Study App
 
-> 컴퓨터 과학 교육을 위한 Spaced repetition 학습 시스템
+> CS Study App (PWA) for spaced repetition learning
 
 [![PWA Ready](https://img.shields.io/badge/PWA-Ready-green.svg)](https://web.dev/progressive-web-apps/)
 [![Offline Support](https://img.shields.io/badge/Offline-Support-blue.svg)](https://developers.google.com/web/fundamentals/instant-and-offline/offline-first)
 [![IndexedDB](https://img.shields.io/badge/Storage-IndexedDB-orange.svg)](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API)
+
+## Project Brief
+
+- **Name**: CS Study App (PWA) for spaced repetition learning
+- **Stack**: HTML/CSS/JS, Dexie (IndexedDB), Service Worker, Manifest
+- **Main screens**: study/add/manage/stats/notes (tabs)
+- **Key features**: decks & questions, SM-2 style reviews, import/export, offline-first
+- **Goals**: clean UI/UX, modular JS, testability, performance, mobile-first
+- **Constraints**: single-file HTML build, no server dependency for MVP
+- **Style**: concise diffs, small iterative steps, keep responses ≤ 150 lines
 
 ## 개요
 
@@ -48,10 +58,12 @@ CS Study App은 SM-2 Spaced repetition 알고리즘을 구현하여 컴퓨터 �
 - **실시간 탭 동기화**: 탭 전환 시 학습 세션 자동 리셋으로 변경사항 즉시 반영
 
 ### Data 관리
-- **Modular Architecture**: Database, spaced repetition, UI handling을 위한 ES6 modules
+- **Modular Architecture**: 9개의 전문화된 ES6 modules로 구성된 clean architecture
+- **Database Abstraction**: 모든 IndexedDB 작업을 위한 centralized database layer
 - **Import/Export**: Preview 및 validation을 포함한 CSV/TSV 지원
 - **Backup System**: Undo 기능이 있는 완전한 data export
 - **Notes System**: Deck 조직과 통합된 노트 작성
+- **Validation Layer**: 모든 입력에 대한 comprehensive validation utilities
 
 ### Analytics & Visualization
 - **Chart.js 통합**: 일일 복습 활동 및 streak visualization
@@ -185,13 +197,22 @@ docker run -p 8000:8000 cs-study-app
 ```
 cs-study-app/
 ├── cs-duolingo-lite.html     # Main application entry point
-├── app.js                    # Legacy monolithic JavaScript
+├── app.js                    # Core application with modular imports
 ├── src/
-│   └── modules/
-│       ├── database.js       # Dexie/IndexedDB operations
-│       ├── spaced-repetition.js # SM-2 algorithm & scheduling
-│       ├── scoring.js        # Answer checking & grading
-│       └── ui-handlers.js    # Event handling & UI management
+│   ├── modules/
+│   │   ├── database.js       # Database operations abstraction layer
+│   │   ├── statistics.js     # Statistics and calendar functionality
+│   │   ├── session.js        # Learning session management
+│   │   ├── data-management.js # Import/export operations
+│   │   ├── theme.js          # Theme switching functionality
+│   │   ├── notes.js          # Note management system
+│   │   ├── drag-drop.js      # Drag and drop for question reordering
+│   │   ├── spaced-repetition.js # SM-2 algorithm & scheduling
+│   │   ├── scoring.js        # Answer checking & grading
+│   │   └── ui-handlers.js    # Event handling & UI management
+│   └── utils/
+│       ├── validation.js     # Input validation utilities
+│       └── dom.js           # DOM manipulation utilities
 ├── ai/
 │   ├── adapter.js           # AI service adapters (Cloud/Local) + Question generation
 │   ├── index.js            # AI factory and configuration
@@ -205,8 +226,8 @@ cs-study-app/
 │   ├── index.js            # Express server entry (optional)
 │   ├── router.js           # REST routes for questions (CRUD)
 │   └── database.js         # SQLite wrapper
-├── CLAUDE.md              # 개발 가이드라인
-└── README.md              # 이 파일
+├── CLAUDE.md              # Development guidelines
+└── README.md              # This file
 ```
 
 ### 선택 사항: SQLite API 서버 실행
@@ -237,12 +258,17 @@ docker-compose up frontend backend
 | 파일 | 목적 | 역할 |
 |------|------|------|
 | `cs-duolingo-lite.html` | Application shell | UI 구조, module imports, 초기화 |
-| `src/modules/database.js` | Data layer | IndexedDB schema, CRUD operations, migrations |
-| `src/modules/spaced-repetition.js` | Learning engine | SM-2 algorithm, scheduling |
-| `src/modules/scoring.js` | Grading engine | Answer checking, fuzzy matching, feedback |
-| `src/modules/ui-handlers.js` | Presentation layer | Event binding, DOM manipulation, animations |
-| `ai/adapter.js` | AI services | Cloud/Local AI adapters, question generation, fallback logic |
-| `ai/router.js` | AI routing | Auto mode logic, metrics tracking |
+| `app.js` | Core application | Main logic with modular imports, global functions |
+| `src/modules/database.js` | Data abstraction layer | Database operations for other modules |
+| `src/modules/statistics.js` | Statistics & calendar | Stats display, learning calendar, achievements |
+| `src/modules/session.js` | Learning session | Session management, grading logic |
+| `src/modules/data-management.js` | Import/Export | CSV/TSV import, data validation, quick add |
+| `src/modules/theme.js` | Theme management | Dark/light theme switching |
+| `src/modules/notes.js` | Note system | Note creation, editing, markdown export |
+| `src/modules/drag-drop.js` | Drag & drop | Question reordering functionality |
+| `src/utils/validation.js` | Input validation | Form validation utilities |
+| `src/utils/dom.js` | DOM utilities | Helper functions for DOM manipulation |
+| `ai/adapter.js` | AI services | Cloud/Local AI adapters, question generation |
 | `styles.css` | Styling | Theme variables, responsive design, animations |
 
 ## Algorithm 구현
@@ -342,6 +368,13 @@ meta: { key, value }
 - **Async/Await**: 현대적 비동기 programming patterns
 - **CSS Variables**: Custom properties를 활용한 theme-aware styling
 - **Semantic HTML**: ARIA attributes를 포함한 접근 가능한 markup
+
+### Development Approach
+- **Concise Changes**: Small, iterative steps with focused diffs
+- **Modular Design**: Clean separation of concerns across 9 specialized modules
+- **Performance First**: Mobile-first design with optimal loading strategies
+- **Testability**: Pure functions and clear interfaces for easy testing
+- **Response Limit**: Keep code changes ≤ 150 lines for maintainability
 
 ### Build 과정
 Build 단계 불필요 - ES6 modules로 browser에서 직접 실행

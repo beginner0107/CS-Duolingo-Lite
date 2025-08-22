@@ -4,7 +4,8 @@ export const KEYWORD_PASS = 0.60;
 export const ESSAY_PASS = 0.60;
 
 export function normalizeText(text) {
-  return text.toLowerCase().trim().replace(/\s+/g, ' ');
+  if (text === null || text === undefined) return '';
+  return String(text).toLowerCase().trim().replace(/\s+/g, ' ');
 }
 
 // Alias for clarity in new APIs
@@ -378,4 +379,24 @@ export async function gradeQuestionAsync(q, userAnswer) {
   }
   // Default: reuse sync grading and wrap in Promise
   return Promise.resolve(gradeQuestion(q, userAnswer));
+}
+
+// Compatibility wrapper for legacy modules expecting `grade()` returning { grade, feedback }
+// Maps detailed scoring into a 0..3 grade and human-readable feedback.
+export function grade(q, userAnswer) {
+  const res = gradeQuestion(q, userAnswer);
+  let mapped = 0;
+  if (res.correct) {
+    if (res.score >= 0.9) mapped = 3;       // Easy
+    else if (res.score >= 0.7) mapped = 2;  // Good
+    else mapped = 1;                        // Hard
+  } else {
+    mapped = 0;                             // Again
+  }
+  const hitsTxt = res.hits && res.hits.length ? `Matched: ${res.hits.join(', ')}` : '';
+  const missTxt = res.misses && res.misses.length ? `Missing: ${res.misses.join(', ')}` : '';
+  const notesTxt = res.notes ? `Notes: ${res.notes}` : '';
+  const parts = [hitsTxt, missTxt, notesTxt].filter(Boolean);
+  const feedback = parts.join(' | ');
+  return { grade: mapped, feedback, correct: res.correct, score: res.score };
 }

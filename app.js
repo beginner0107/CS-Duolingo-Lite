@@ -1,6 +1,12 @@
 import { getAdapter } from './ai/index.js';
-import { openEditQuestion as uiOpenEditQuestion, closeEditModal as uiCloseEditModal, saveEditQuestion as uiSaveEditQuestion, showTab as uiShowTab, bindEvents } from './src/modules/ui-handlers.js';
+import { openEditQuestion as uiOpenEditQuestion, closeEditModal as uiCloseEditModal, saveEditQuestion as uiSaveEditQuestion, showTab as uiShowTab, bindEvents, getCurrentNoteId, setCurrentNoteId } from './src/modules/ui-handlers.js';
 import { gradeQuestionAsync } from './src/modules/scoring.js';
+import { updateStats, updateDailyStreak, generateAchievements, openLearningCalendar, closeLearningCalendar } from './src/modules/statistics.js';
+import { /* startSession, gradeAnswer, */ endSession, pauseSession, resumeSession, resetSession } from './src/modules/session.js';
+import { exportData as dmExportData, importData as dmImportData, showGuidedImport, hideGuidedImport, handleGuidedImport, confirmImport, cancelImport, showQuickAdd, hideQuickAdd, submitQuickAdd } from './src/modules/data-management.js';
+import { initTheme, toggleTheme, setTheme } from './src/modules/theme.js';
+import { createNote, updateNoteList, editNote, saveNote, closeNoteEditor, deleteNoteConfirm, exportNoteToMarkdown, convertSelectionToQuestions } from './src/modules/notes.js';
+import { handleDragStart, handleDragOver, handleDragLeave, handleDrop, handleDragEnd } from './src/modules/drag-drop.js';
 
 // Immediately bind critical functions for HTML onclick handlers
 // This ensures they're available even before DOMContentLoaded
@@ -8,12 +14,51 @@ window.showTab = uiShowTab;
 window.openEditQuestion = uiOpenEditQuestion;
 window.saveEditQuestion = uiSaveEditQuestion;
 window.closeEditModal = uiCloseEditModal;
+window.openLearningCalendar = openLearningCalendar;
+window.closeLearningCalendar = closeLearningCalendar;
+// Use in-file legacy implementations for session to match current UI structure
+window.startSession = startSessionLegacy;
+window.gradeAnswer = gradeAnswerLegacy;
+window.endSession = endSession;
+window.pauseSession = pauseSession;
+window.resumeSession = resumeSession;
+window.resetSession = resetSession;
+// Bind data-management functions and legacy aliases
+window.confirmImport = confirmImport;
+window.exportData = dmExportData;
+window.importData = dmImportData;
+window.showGuidedImport = showGuidedImport;
+window.hideGuidedImport = hideGuidedImport;
+window.handleGuidedImport = handleGuidedImport;
+window.cancelImport = cancelImport;
+window.showQuickAdd = showQuickAdd;
+window.hideQuickAdd = hideQuickAdd;
+window.submitQuickAdd = submitQuickAdd;
+// Legacy names for backward compatibility
+window.initializeImport = showGuidedImport;
+window.showImportPreview = handleGuidedImport;
+window.quickAddFromText = showQuickAdd;
+window.quickAddQuestion = submitQuickAdd;
+window.toggleTheme = toggleTheme;
+window.createNote = createNote;
+window.editNote = editNote;
+window.saveNote = saveNote;
+window.closeNoteEditor = closeNoteEditor;
+window.deleteNoteConfirm = deleteNoteConfirm;
+window.exportNoteToMarkdown = exportNoteToMarkdown;
+window.convertSelectionToQuestions = convertSelectionToQuestions;
+window.handleDragStart = handleDragStart;
+window.handleDragOver = handleDragOver;
+window.handleDragLeave = handleDragLeave;
+window.handleDrop = handleDrop;
+window.handleDragEnd = handleDragEnd;
 
 // Forward declaration for deleteQuestion (defined later in file)
 window.deleteQuestion = (...args) => deleteQuestion(...args);
 
 // ========== 데이터베이스 설정 (IndexedDB with Dexie) ==========
 const db = new Dexie('CSStudyApp');
+window.db = db; // Make db globally accessible for modules
 const APP_SCHEMA_VERSION = 51; // App-level schema/meta version (not Dexie version)
 
 // Schema versioning - Version 1 (initial schema)
@@ -672,7 +717,9 @@ function runSM2PreviewTests() {
 }
 
 // ========== 세션 관리 ==========
-async function startSession() {
+// Legacy implementation kept for reference after module refactor
+// Renamed to avoid duplicate identifier with imported session module
+async function startSessionLegacy() {
   const deckId = document.getElementById('deckSelect').value;
   const count = parseInt(document.getElementById('questionCount').value);
   
@@ -902,8 +949,7 @@ async function submitAnswer(userAnswer) {
   // 점수 & XP (temporary for initial feedback)
   const gain = correct ? 10 : 2;
   session.score += gain;
-  if (correct) session.ok++; 
-  else session.ng++;
+  // Note: session.ok/ng counters will be updated in gradeAnswer() for final grades only
   
   const profile = await getProfile();
   profile.xp += gain;
@@ -919,7 +965,42 @@ async function submitAnswer(userAnswer) {
   session.currentCorrect = correct;
 }
 
-async function gradeAnswer(grade) {
+// Legacy implementation kept for reference after module refactor
+// Renamed to avoid duplicate identifier with imported statistics module
+async function updateDailyStreakLegacy() {
+  const profile = await getProfile();
+  const today = todayStr();
+  
+  // Only update if we haven't studied today yet
+  if (profile.lastStudy === today) {
+    return; // Already studied today
+  }
+  
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayStr = yesterday.toISOString().slice(0, 10);
+  
+  if (profile.lastStudy === yesterdayStr) {
+    // Continuing streak
+    profile.streak++;
+  } else if (!profile.lastStudy) {
+    // First time studying
+    profile.streak = 1;
+  } else {
+    // Streak was broken, start new streak
+    profile.streak = 1;
+  }
+  
+  profile.lastStudy = today;
+  await setProfile(profile);
+  
+  // Update UI immediately
+  document.getElementById('streak').textContent = profile.streak;
+}
+
+// Legacy implementation kept for reference after module refactor
+// Renamed to avoid duplicate identifier with imported session module
+async function gradeAnswerLegacy(grade) {
   const q = session.currentQuestion;
   const correct = session.currentCorrect;
   // Disable grade buttons to prevent double clicks
@@ -938,17 +1019,6 @@ async function gradeAnswer(grade) {
   updatedReview.againCount = prevAgain + (grade === 0 ? 1 : 0);
   await setReview(q.id, updatedReview);
 
-  // Update daily rollup (per-day correct/total)
-  try {
-    const roll = await getDailyRollup();
-    const today = todayStr();
-    const cur = roll[today] || { correct: 0, total: 0 };
-    cur.total += 1;
-    if (correct) cur.correct += 1;
-    roll[today] = cur;
-    await setDailyRollup(roll);
-  } catch (_) {}
-
   // Recompute and re-render interval previews on buttons using updated state
   try {
     updateGradePreviewsForCurrent(updatedReview);
@@ -960,11 +1030,35 @@ async function gradeAnswer(grade) {
     showToast(`다음 복습: ${formatInterval(iv)}`, 'info');
   } catch (_) {}
   
-  // If grade is Again (0), re-queue this question soon
+  // If grade is Again (0), re-queue this question shortly and advance to next
   if (grade === 0 && session) {
-    const insertAt = Math.min(session.queue.length, session.index + 3);
+    const currentIdx = session.index;
+    const insertAt = Math.min(session.queue.length, currentIdx + 3);
     session.queue.splice(insertAt, 0, q);
+    // Advance to next question now; it will reappear later from the re-queue
+    session.index++;
+    setTimeout(() => showQuestion(), 300);
+    return;
   }
+  
+  // Only count completion stats for non-Again grades
+  // Update session counters for completed questions
+  if (correct) session.ok++; 
+  else session.ng++;
+  
+  // Update streak for daily learning activity
+  await updateDailyStreak();
+  
+  // Update daily rollup (per-day correct/total)
+  try {
+    const roll = await getDailyRollup();
+    const today = todayStr();
+    const cur = roll[today] || { correct: 0, total: 0 };
+    cur.total += 1;
+    if (correct) cur.correct += 1;
+    roll[today] = cur;
+    await setDailyRollup(roll);
+  } catch (_) {}
   
   // Update daily stats (count due reviews only)
   const stats = getDailyStats();
@@ -1680,8 +1774,16 @@ async function updateQuestionList() {
 	const tag = document.getElementById('qTagFilter').value.toLowerCase();
 	const deckId = document.getElementById('qDeckFilter').value;
 
-	let query = db.questions.toCollection();
-	if (deckId) query = query.where('deck').equals(Number(deckId));
+	let query;
+	
+	// Start with deck filter if specified (most efficient)
+	if (deckId) {
+		query = db.questions.where('deck').equals(Number(deckId));
+	} else {
+		query = db.questions.toCollection();
+	}
+	
+	// Apply other filters
 	if (type) query = query.filter(q => q.type === type);
 	if (tag) query = query.filter(q => (q.tags || []).some(t => t.toLowerCase().includes(tag)));
 	if (search) {
@@ -1857,72 +1959,92 @@ async function saveEditQuestion(id, btn) {
   await updateQuestionList();
 }
 
-async function updateStats() {
+// TODO: Remove this entire function and just call imported updateStats
+// Legacy implementation kept for reference after module refactor
+// Renamed to avoid duplicate identifier with imported statistics module
+async function updateStatsLegacy() {
  const profile = await getProfile();
  const questions = await getQuestions();
  const review = await getReview();
+ const studiedProblems = Object.keys(review).length;
+ const accuracyColor = rolling >= 80 ? '#10b981' : rolling >= 60 ? '#f59e0b' : '#ef4444';
+ const streakColor = profile.streak >= 7 ? '#8b5cf6' : profile.streak >= 3 ? '#06b6d4' : '#6b7280';
  
- // 7일 롤링 정답률
- const roll = await getDailyRollup();
- const dates = Array.from({length:7}, (_,i)=>{ const d=new Date(); d.setDate(d.getDate()-(6-i)); return d.toISOString().slice(0,10); });
- let sumC=0, sumT=0, maxT=1;
- dates.forEach(d=>{ const r=roll[d]||{correct:0,total:0}; sumC+=r.correct; sumT+=r.total; if (r.total>maxT) maxT=r.total; });
- const rolling = sumT===0?0:Math.round((sumC/sumT)*100);
-
- // Due counts
- const today = todayStr();
- const tomorrow = (()=>{const t=new Date(today); t.setDate(t.getDate()+1); return t.toISOString().slice(0,10);})();
- const weekEnd = (()=>{const t=new Date(today); t.setDate(t.getDate()+7); return t;})();
- const vals = Object.values(review);
- const dueToday = vals.filter(r=> r.due === today).length;
- const dueTomorrow = vals.filter(r=> r.due === tomorrow).length;
- const dueWeek = vals.filter(r=> { const d=new Date(r.due); return d>new Date(today) && d<=weekEnd; }).length;
-
- // Weekly activity bars
- let bars = '<div style="display:flex;gap:6px;align-items:flex-end">';
- dates.forEach(d=>{ const r=roll[d]||{total:0}; const h=Math.round((r.total/maxT)*40); bars+=`<div title="${d}: ${r.total}" style="width:12px;height:${h}px;background:#6366f1;border-radius:3px"></div>`; });
- bars += '</div>';
-
- // 학습 통계
  let statsHtml = `
-   <div style="margin-bottom:16px">
-     <div class="stat-label">총 학습 문제</div>
-     <div class="stat-value">${Object.keys(review).length}</div>
+   <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
+     <div style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);padding:14px;border-radius:10px;color:white;text-align:center">
+       <div style="font-size:20px;font-weight:bold;margin-bottom:2px">${studiedProblems}</div>
+       <div style="opacity:0.9;font-size:11px">📚 학습한 문제</div>
+     </div>
+     <div style="background:linear-gradient(135deg,${accuracyColor} 0%,${accuracyColor}dd 100%);padding:14px;border-radius:10px;color:white;text-align:center">
+       <div style="font-size:20px;font-weight:bold;margin-bottom:2px">${rolling}%</div>
+       <div style="opacity:0.9;font-size:11px">🎯 7일 정답률</div>
+     </div>
+     <div style="background:linear-gradient(135deg,${streakColor} 0%,${streakColor}dd 100%);padding:14px;border-radius:10px;color:white;text-align:center">
+       <div style="font-size:20px;font-weight:bold;margin-bottom:2px" id="streak">${profile.streak}</div>
+       <div style="opacity:0.9;font-size:11px">🔥 연속 학습</div>
+     </div>
    </div>
-   <div style="margin-bottom:16px">
-     <div class="stat-label">총 문제 수</div>
-     <div class="stat-value">${questions.length}</div>
+   
+   <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px">
+     <div style="background:var(--card-bg);padding:10px;border-radius:8px;border:1px solid var(--border);text-align:center">
+       <div style="font-size:18px;color:#ef4444;margin-bottom:2px">${dueToday}</div>
+       <div style="font-size:10px;color:var(--muted)">📅 오늘</div>
+     </div>
+     <div style="background:var(--card-bg);padding:10px;border-radius:8px;border:1px solid var(--border);text-align:center">
+       <div style="font-size:18px;color:#f59e0b;margin-bottom:2px">${dueTomorrow}</div>
+       <div style="font-size:10px;color:var(--muted)">⏰ 내일</div>
+     </div>
+     <div style="background:var(--card-bg);padding:10px;border-radius:8px;border:1px solid var(--border);text-align:center">
+       <div style="font-size:18px;color:#06b6d4;margin-bottom:2px">${dueWeek}</div>
+       <div style="font-size:10px;color:var(--muted)">🗓️ 이번 주</div>
+     </div>
    </div>
-   <div style="margin-bottom:16px">
-     <div class="stat-label">7일 정답률</div>
-     <div class="stat-value">${rolling}%</div>
-   </div>
-   <div style="margin-bottom:16px">
-     <div class="stat-label">예정 항목</div>
-     <div class="stat-value">오늘 ${dueToday} · 내일 ${dueTomorrow} · 이번 주 ${dueWeek}</div>
-   </div>
-   <div style="margin-bottom:16px">
-     <h3 style="font-size:16px;color:var(--muted);margin-bottom:8px">일일 복습 활동</h3>
-     <canvas id="dailyReviewChart" width="400" height="200"></canvas>
-   </div>
-   <div style="margin-bottom:16px">
-     <h3 style="font-size:16px;color:var(--muted);margin-bottom:8px">연속 학습 현황</h3>
-     <canvas id="streakChart" width="400" height="150"></canvas>
+
+   <div style="background:var(--card-bg);padding:20px;border-radius:12px;border:1px solid var(--border);margin-bottom:24px">
+     <h3 style="font-size:18px;color:var(--text);margin:0 0 16px 0;display:flex;align-items:center">
+       <span style="font-size:16px;margin-right:6px">📅</span> 이번 주 학습
+      </h3>
+      <button onclick="openLearningCalendar()" style="background:var(--accent);color:white;border:none;padding:4px 10px;border-radius:5px;font-size:11px;cursor:pointer;position:absolute;top:14px;right:14px">
+        전체 보기
+      </button>
+      <div style="display:flex;justify-content:space-between;gap:2px;margin-bottom:8px" id="weeklyCalendar">
+        <!-- Weekly calendar will be generated by JavaScript -->
+      </div>
+      <div style="text-align:center;font-size:11px;color:var(--muted);margin-top:8px" id="streakMessage">
+        ${profile.streak >= 7 ? '🚀 대단해요! 학습 습관이 완전히 자리잡았네요!' : 
+          profile.streak >= 3 ? '👍 좋은 페이스로 가고 있어요!' : 
+          profile.streak >= 1 ? '💪 시작이 반이에요!' : '오늘부터 새로운 학습을 시작해보세요!'}
+      </div>
    </div>
 `;
  document.getElementById('statsContent').innerHTML = statsHtml;
  
  // Initialize charts after DOM is updated
- await initStatsCharts({ roll, dates, profile });
+ // Charts removed for cleaner UI
  
- // 성취도
+ // Enhanced Achievement System
  let achievementHtml = '';
+const studiedToday = roll[todayStr()]?.total || 0;
+const totalQuestions = questions.length;
+const completedQuestions = Object.keys(review).length;
  const achievements = [
-  {name: '🔥 불타는 열정', desc: '7일 연속 학습', achieved: profile.streak >= 7},
-  {name: '💯 백점 만점', desc: '세션 정답률 100%', achieved: false},
-  {name: '📚 지식 탐험가', desc: 'XP 1000 달성', achieved: profile.xp >= 1000},
-  {name: '🎯 정확한 저격수', desc: '7일 정답률 80%', achieved: rolling >= 80}
+  {name: '🔥 불타는 열정', desc: '7일 연속 학습', achieved: profile.streak >= 7, category: 'streak', progress: Math.min(profile.streak, 7), total: 7},
+  {name: '⭐ 첫 발걸음', desc: '첫 문제 학습 완료', achieved: completedQuestions > 0, category: 'basic', progress: Math.min(completedQuestions, 1), total: 1},
+  {name: '📚 지식 탐험가', desc: 'XP 1000 달성', achieved: profile.xp >= 1000, category: 'xp', progress: Math.min(profile.xp, 1000), total: 1000},
+  {name: '🎯 정확한 저격수', desc: '7일 정답률 80%', achieved: rolling >= 80, category: 'accuracy', progress: Math.min(rolling, 80), total: 80},
+ {name: '💪 오늘의 승부사', desc: '하루 10문제 학습', achieved: studiedToday >= 10, category: 'daily', progress: Math.min(studiedToday, 10), total: 10},
+ {name: '🏆 마스터 클래스', desc: '문제 50개 학습', achieved: completedQuestions >= 50, category: 'master', progress: Math.min(completedQuestions, 50), total: 50},
+ {name: '🚀 스피드러너', desc: '하루 20문제 학습', achieved: studiedToday >= 20, category: 'speed', progress: Math.min(studiedToday, 20), total: 20},
+ {name: '💎 다이아몬드', desc: 'XP 5000 달성', achieved: profile.xp >= 5000, category: 'legend', progress: Math.min(profile.xp, 5000), total: 5000}
 ];
+
+// Sort achievements: completed first, then by progress  
+achievements.sort((a, b) => {
+  if (a.achieved && !b.achieved) return -1;
+  if (!a.achieved && b.achieved) return 1;
+  return (b.progress / b.total) - (a.progress / a.total);
+});
  
  achievements.forEach(a => {
    achievementHtml += `
@@ -1934,7 +2056,7 @@ async function updateStats() {
  });
  document.getElementById('achievementContent').innerHTML = achievementHtml;
  
- // 복습 일정
+ // Enhanced Review Schedule
  const todayDate = new Date(today);
  const upcoming = Object.entries(review)
    .filter(([id, r]) => new Date(r.due) > todayDate)
@@ -1955,22 +2077,84 @@ async function updateStats() {
      }
    });
  } else {
-   scheduleHtml = '<div style="color:var(--muted)">예정된 복습이 없습니다</div>';
+   scheduleHtml = `
+    <div style="text-align:center;padding:32px;color:var(--muted)">
+      <div style="font-size:48px;margin-bottom:16px">🎉</div>
+      <div style="font-size:16px;margin-bottom:8px">예정된 복습이 없습니다</div>
+      <div style="font-size:14px">모든 복습을 완료했거나 새로운 문제를 추가해보세요!</div>
+    </div>
+  `;
  }
  document.getElementById('scheduleContent').innerHTML = scheduleHtml;
  
- // Hardest 10 (by low ease, then high againCount)
- const revArr = Object.entries(review).map(([id,r])=>({id: Number(id), ease: r.ease ?? 2.5, again: r.againCount||0}));
+ // Enhanced Top 10 Difficult Problems
+ const revArr = Object.entries(review).map(([id,r])=>({
+  id: Number(id), 
+  ease: r.ease ?? 2.5, 
+  again: r.againCount||0,
+  correct: r.correct || 0,
+  total: r.count || 0
+}));
  revArr.sort((a,b)=> (a.ease - b.ease) || (b.again - a.again));
  const hardest = revArr.slice(0,10);
  let hardHtml = '';
- hardest.forEach(item=>{
+ hardest.forEach((item, index) => {
    const q = questions.find(q=> q.id == item.id);
-   if (q) hardHtml += `<div style=\"margin-bottom:6px\"><span class=\"badge\">ease ${item.ease.toFixed(2)} · again ${item.again}</span> ${escapeHtml(q.prompt.substring(0,40))}</div>`;
+   if (!q) return;
+  
+  const accuracy = item.total > 0 ? Math.round((item.correct / item.total) * 100) : 0;
+  const difficultyLevel = item.ease < 1.5 ? '🔥' : item.ease < 2.0 ? '😵' : item.ease < 2.5 ? '😰' : '😅';
+  const rankColor = index < 3 ? '#ff6b6b' : index < 6 ? '#ffa726' : '#66bb6a';
+  
+  hardHtml += `
+    <div style=\"background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px;position:relative\">
+      <div style=\"display:flex;align-items:center;justify-content:space-between;margin-bottom:12px\">
+        <div style=\"display:flex;align-items:center\">
+          <div style=\"background:${rankColor};color:white;font-weight:bold;font-size:12px;padding:4px 8px;border-radius:12px;margin-right:12px;min-width:24px;text-align:center\">
+            ${index + 1}
+          </div>
+          <div style=\"font-size:20px;margin-right:8px\">${difficultyLevel}</div>
+          <div style=\"font-size:14px;color:var(--text);font-weight:500\">난이도 ${item.ease.toFixed(1)}</div>
+        </div>
+        <div style=\"text-align:right\">
+          <div style=\"font-size:18px;font-weight:bold;color:${accuracy < 50 ? '#ff6b6b' : accuracy < 80 ? '#ffa726' : '#66bb6a'}\">${accuracy}%</div>
+          <div style=\"font-size:11px;color:var(--muted)\">정답률</div>
+        </div>
+      </div>
+      
+      <div style=\"font-size:14px;color:var(--text);line-height:1.4;margin-bottom:8px\">
+        ${escapeHtml(q.prompt.substring(0, 80))}${q.prompt.length > 80 ? '...' : ''}
+      </div>
+      
+      <div style=\"display:flex;gap:8px\">
+        <span style=\"background:rgba(255, 107, 107, 0.1);color:#ff6b6b;font-size:11px;padding:2px 6px;border-radius:4px\">
+          ${item.again}회 틀림
+        </span>
+        <span style=\"background:rgba(102, 187, 106, 0.1);color:#66bb6a;font-size:11px;padding:2px 6px;border-radius:4px\">
+          ${item.total}회 시도
+        </span>
+      </div>
+    </div>
+  `;
  });
- if (!hardHtml) hardHtml = '<div style=\"color:var(--muted)\">데이터가 부족합니다</div>';
+ if (!hardHtml) {
+  hardHtml = `
+    <div style=\"text-align:center;padding:32px;color:var(--muted)\">
+      <div style=\"font-size:48px;margin-bottom:16px\">🎯</div>
+      <div style=\"font-size:16px;margin-bottom:8px\">아직 충분한 학습 데이터가 없어요</div>
+      <div style=\"font-size:14px\">더 많은 문제를 풀어보세요!</div>
+    </div>
+  `;
+}
  const statsContainer = document.getElementById('statsContent');
- statsContainer.innerHTML += `<div style=\"margin-top:16px\"><div class=\"stat-label\">어려운 문제 Top 10</div>${hardHtml}</div>`;
+ statsContainer.innerHTML += `
+  <div style=\"background:var(--card-bg);padding:20px;border-radius:12px;border:1px solid var(--border);margin-top:24px\">
+    <h3 style=\"font-size:18px;color:var(--text);margin:0 0 16px 0;display:flex;align-items:center\">
+      <span style=\"font-size:24px;margin-right:8px\">🎯</span> 어려운 문제 Top 10
+    </h3>
+    ${hardHtml}
+  </div>
+`;
 }
 
 async function calculateAvgAccuracy() {
@@ -2156,7 +2340,9 @@ async function saveSettings() {
 }
 
 // ========== 유틸리티 ==========
-async function showTab(e, tabName) {
+// Legacy implementation kept for reference after module refactor
+// Renamed to avoid duplicate identifier with imported ui-handlers module
+async function showTabLegacy(e, tabName) {
  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
  document.querySelectorAll('.tab-content').forEach(t => t.style.display = 'none');
  
@@ -2463,7 +2649,8 @@ function escapeHtml(str) {
  return div.innerHTML;
 }
 
-let currentNoteId = null;
+// Note: currentNoteId is managed in ui-handlers.js to avoid conflicts
+// let currentNoteId = null; 
 const selectedNoteItemIds = new Set();
 
 async function loadNotes() {
@@ -2486,7 +2673,9 @@ async function loadNotes() {
   `).join('') || '<div style="text-align:center;color:var(--muted);padding:20px">노트가 없습니다.</div>';
 }
 
-async function createNote() {
+// Legacy implementation kept for reference after module refactor
+// Renamed to avoid duplicate identifier with imported notes module
+async function createNoteLegacy() {
   const deckId = document.getElementById('deckSelectNotes').value;
   const title = document.getElementById('noteTitle').value.trim();
   const source = document.getElementById('noteSource').value.trim();
@@ -2509,7 +2698,7 @@ async function createNote() {
 }
 
 async function loadNote(id) {
-  currentNoteId = id;
+  setCurrentNoteId(id);
   selectedNoteItemIds.clear();
 
   const note = await db.notes.get(id);
@@ -2527,13 +2716,13 @@ async function loadNote(id) {
 }
 
 async function addLine() {
-  if (!currentNoteId) return;
+  if (!getCurrentNoteId()) return;
   // In a real implementation, this would come from a dedicated input
   // For now, we'll add a placeholder line.
   const text = `새로운 줄 - ${new Date().toLocaleTimeString()}`;
 
   await db.note_items.add({
-    noteId: currentNoteId,
+    noteId: getCurrentNoteId(),
     ts: new Date().toISOString(),
     text,
     tags: [],
@@ -2555,7 +2744,7 @@ function toggleSelectLine(id) {
 
 async function deleteLine(id) {
   await db.note_items.delete(id);
-  loadNote(currentNoteId);
+  loadNote(getCurrentNoteId());
 }
 
 async function deleteNoteCascade(id) {
@@ -2564,7 +2753,7 @@ async function deleteNoteCascade(id) {
   await db.note_items.where('noteId').equals(id).delete();
   await db.notes.delete(id);
 
-  currentNoteId = null;
+  setCurrentNoteId(null);
   // Clear editor and reload list
   document.getElementById('deckSelectNotes').value = '';
   document.getElementById('noteTitle').value = '';
@@ -2574,7 +2763,7 @@ async function deleteNoteCascade(id) {
 }
 
 async function saveNoteMeta() {
-  if (!currentNoteId) return;
+  if (!getCurrentNoteId()) return;
 
   const deckId = document.getElementById('deckSelectNotes').value;
   const title = document.getElementById('noteTitle').value.trim();
@@ -2585,7 +2774,7 @@ async function saveNoteMeta() {
     return;
   }
 
-  await db.notes.update(currentNoteId, {
+  await db.notes.update(getCurrentNoteId(), {
     deckId: Number(deckId),
     title,
     source,
@@ -2597,12 +2786,12 @@ async function saveNoteMeta() {
 }
 
 async function noteLinesToDraftQuestions() {
-  if (!currentNoteId || selectedNoteItemIds.size === 0) {
+  if (!getCurrentNoteId() || selectedNoteItemIds.size === 0) {
     showToast('변환할 노트 줄을 선택하세요.', 'warning');
     return;
   }
 
-  const note = await db.notes.get(currentNoteId);
+  const note = await db.notes.get(getCurrentNoteId());
   if (!note) return;
 
   const itemsToConvert = await db.note_items.where('id').anyOf(Array.from(selectedNoteItemIds)).toArray();
@@ -2627,15 +2816,15 @@ async function noteLinesToDraftQuestions() {
 }
 
 async function exportNoteAsMarkdown() {
-  if (!currentNoteId) {
+  if (!getCurrentNoteId()) {
     showToast('내보낼 노트를 선택하세요.', 'warning');
     return;
   }
 
-  const note = await db.notes.get(currentNoteId);
+  const note = await db.notes.get(getCurrentNoteId());
   if (!note) return;
 
-  const items = await db.note_items.where('noteId').equals(currentNoteId).sortBy('ts');
+  const items = await db.note_items.where('noteId').equals(getCurrentNoteId()).sortBy('ts');
   const decks = await getDecks();
   const deck = decks.find(d => Number(d.id) === Number(note.deckId));
 
@@ -2646,10 +2835,19 @@ async function exportNoteAsMarkdown() {
   if (note.source) {
     markdown += `- Source: ${note.source}\n`;
   }
-  markdown += `- Created: ${new Date(note.created).toISOString()}\n\n`;
+  // Handle created date safely
+  const createdDate = note.created ? new Date(note.created) : new Date();
+  const createdDateStr = !isNaN(createdDate.getTime()) ? createdDate.toISOString() : 'Unknown';
+  markdown += `- Created: ${createdDateStr}\n\n`;
+  
   markdown += `## Notes\n\n`;
 
-  markdown += items.map(item => `- [${new Date(item.ts).toLocaleString()}] ${item.text}`).join('\n');
+  // Handle item timestamps safely
+  markdown += items.map(item => {
+    const itemDate = item.ts ? new Date(item.ts) : new Date();
+    const dateStr = !isNaN(itemDate.getTime()) ? itemDate.toLocaleString() : 'Unknown time';
+    return `- [${dateStr}] ${item.text}`;
+  }).join('\n');
 
   const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -2760,7 +2958,9 @@ async function deleteCurrentNote() {
   await updateNotesList();
 }
 
-async function exportNoteToMarkdown() {
+// Legacy implementation kept for reference after module refactor
+// Renamed to avoid duplicate identifier with imported notes module
+async function exportNoteToMarkdownLegacy() {
   if (!currentNote) return;
   const items = await DataStore.getNoteItems(currentNote.id);
   const title = document.getElementById('noteTitle').textContent;
@@ -2780,7 +2980,9 @@ async function exportNoteToMarkdown() {
   a.click();
 }
 
-async function convertSelectionToQuestions() {
+// Legacy implementation kept for reference after module refactor
+// Renamed to avoid duplicate identifier with imported notes module
+async function convertSelectionToQuestionsLegacy() {
   // This is a placeholder for a more complex feature.
   showToast('선택한 노트 항목을 문제로 변환하는 기능은 곧 추가될 예정입니다.', 'info');
 }
@@ -2905,7 +3107,9 @@ function getTheme() {
   return localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
 }
 
-function setTheme(theme) {
+// Legacy implementation kept for reference after module refactor
+// Renamed to avoid duplicate identifier with imported theme module
+function setThemeLegacy(theme) {
   localStorage.setItem('theme', theme);
   document.documentElement.setAttribute('data-theme', theme);
   updateThemeIcon(theme);
@@ -2918,13 +3122,17 @@ function updateThemeIcon(theme) {
   }
 }
 
-function toggleTheme() {
+// Legacy implementation kept for reference after module refactor
+// Renamed to avoid duplicate identifier with imported theme module
+function toggleThemeLegacy() {
   const current = getTheme();
   const next = current === 'light' ? 'dark' : 'light';
   setTheme(next);
 }
 
-function initTheme() {
+// Legacy implementation kept for reference after module refactor
+// Renamed to avoid duplicate identifier with imported theme module
+function initThemeLegacy() {
   const theme = getTheme();
   setTheme(theme);
 }
@@ -2932,14 +3140,18 @@ function initTheme() {
 // ========== Drag & Drop for Question Reordering ==========
 let draggedElement = null;
 
-function handleDragStart(e) {
+// Legacy implementation kept for reference after module refactor
+// Renamed to avoid duplicate identifier with imported drag-drop module
+function handleDragStartLegacy(e) {
   draggedElement = e.target;
   e.target.classList.add('dragging');
   e.dataTransfer.effectAllowed = 'move';
   e.dataTransfer.setData('text/html', e.target.outerHTML);
 }
 
-function handleDragOver(e) {
+// Legacy implementation kept for reference after module refactor
+// Renamed to avoid duplicate identifier with imported drag-drop module
+function handleDragOverLegacy(e) {
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
   
@@ -2958,7 +3170,9 @@ function handleDragOver(e) {
   }
 }
 
-function handleDrop(e) {
+// Legacy implementation kept for reference after module refactor
+// Renamed to avoid duplicate identifier with imported drag-drop module
+function handleDropLegacy(e) {
   e.preventDefault();
   
   const target = e.target.closest('.question-item');
@@ -2983,7 +3197,9 @@ function handleDrop(e) {
   });
 }
 
-function handleDragEnd(e) {
+// Legacy implementation kept for reference after module refactor
+// Renamed to avoid duplicate identifier with imported drag-drop module
+function handleDragEndLegacy(e) {
   e.target.classList.remove('dragging');
   draggedElement = null;
   
@@ -3007,6 +3223,8 @@ async function updateQuestionOrder() {
 
 // ========== Charts for Stats ==========
 let chartsInitialized = false;
+let dailyReviewChartInstance = null;
+let streakChartInstance = null;
 
 function resetChartsFlag() {
   chartsInitialized = false;
@@ -3027,6 +3245,12 @@ async function initStatsCharts(data) {
     }
   }
   
+  // Reset charts flag to allow re-initialization
+  chartsInitialized = false;
+  
+  // Wait for DOM to be fully updated
+  await new Promise(resolve => setTimeout(resolve, 50));
+  
   if (chartsInitialized) return;
   chartsInitialized = true;
   
@@ -3037,6 +3261,11 @@ async function initStatsCharts(data) {
 async function createDailyReviewChart(data) {
   const canvas = document.getElementById('dailyReviewChart');
   if (!canvas) return;
+  
+  // Destroy existing chart if it exists
+  if (dailyReviewChartInstance) {
+    dailyReviewChartInstance.destroy();
+  }
   
   const { roll, dates } = data;
   const reviewData = dates.map(date => {
@@ -3054,7 +3283,7 @@ async function createDailyReviewChart(data) {
     return d.toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' });
   });
   
-  new Chart(canvas, {
+  dailyReviewChartInstance = new Chart(canvas, {
     type: 'bar',
     data: {
       labels,
@@ -3102,6 +3331,11 @@ async function createStreakChart(data) {
   const canvas = document.getElementById('streakChart');
   if (!canvas) return;
   
+  // Destroy existing chart if it exists
+  if (streakChartInstance) {
+    streakChartInstance.destroy();
+  }
+  
   const { profile } = data;
   const currentStreak = profile.streak || 0;
   
@@ -3119,7 +3353,7 @@ async function createStreakChart(data) {
     streakData.push(streakValue);
   }
   
-  new Chart(canvas, {
+  streakChartInstance = new Chart(canvas, {
     type: 'line',
     data: {
       labels: streakLabels,
@@ -3188,7 +3422,7 @@ function updateModelOptions() {
   if (!window._isLoadingAISettings) {
     const apiKey = document.getElementById('aiApiKey')?.value;
     if (provider && apiKey) {
-      saveAISettings();
+      saveAISettings(true); // Silent save to prevent toast spam
     }
   }
 }
@@ -3201,7 +3435,7 @@ function autoSaveAISettings() {
   const apiKey = document.getElementById('aiApiKey')?.value;
   
   if (provider && apiKey) {
-    saveAISettings();
+    saveAISettings(true); // Silent save to prevent toast spam
   }
 }
 
@@ -3219,13 +3453,26 @@ function getBaseUrl(provider, model = null) {
   }
 }
 
-function saveAISettings() {
+function saveAISettings(silent = false) {
   const provider = document.getElementById('aiProvider')?.value;
   const apiKey = document.getElementById('aiApiKey')?.value;
   const model = document.getElementById('aiModel')?.value;
   
   if (provider && apiKey) {
-    const selectedModel = model || AI_MODELS[provider]?.[0];
+    // Only use fallback model if no model is specified and no existing config
+    const existingConfig = window.__AI_CONF;
+    let selectedModel = model;
+    
+    if (!selectedModel) {
+      // If we have existing config with the same provider, keep the same model
+      if (existingConfig && existingConfig.provider === provider && existingConfig.model) {
+        selectedModel = existingConfig.model;
+      } else {
+        // Only use first model as fallback if truly no model preference exists
+        selectedModel = AI_MODELS[provider]?.[0] || '';
+      }
+    }
+    
     const config = {
       provider,
       apiKey,
@@ -3237,15 +3484,15 @@ function saveAISettings() {
     localStorage.setItem('aiConfig', JSON.stringify(config));
     window.__AI_CONF = config;
     
-    if (typeof showToast === 'function') {
+    if (!silent && typeof showToast === 'function') {
       showToast('AI 설정이 저장되었습니다', 'success');
-    } else {
+    } else if (!silent) {
       console.log('AI settings saved successfully');
     }
   } else {
-    if (typeof showToast === 'function') {
+    if (!silent && typeof showToast === 'function') {
       showToast('Provider와 API Key를 입력하세요', 'warning');
-    } else {
+    } else if (!silent) {
       console.log('Provider and API Key required');
     }
   }
@@ -3258,6 +3505,9 @@ function loadAISettings() {
       const config = JSON.parse(saved);
       window.__AI_CONF = config;
       
+      // Set loading flag BEFORE any DOM manipulation
+      window._isLoadingAISettings = true;
+      
       const providerEl = document.getElementById('aiProvider');
       const apiKeyEl = document.getElementById('aiApiKey');
       const modelEl = document.getElementById('aiModel');
@@ -3268,16 +3518,19 @@ function loadAISettings() {
       // Update model options first, then set the saved model value
       updateModelOptions();
       
-      // Set model value after dropdown is populated, but prevent auto-save during load
+      // Set model value after dropdown is populated
       if (modelEl && config.model) {
-        // Temporarily disable auto-save during initial load
-        window._isLoadingAISettings = true;
         modelEl.value = config.model;
-        window._isLoadingAISettings = false;
       }
+      
+      // Clear loading flag AFTER all DOM manipulation is complete
+      window._isLoadingAISettings = false;
+      
+      console.log('AI settings loaded:', { provider: config.provider, model: config.model });
     }
   } catch (e) {
     console.warn('Failed to load AI settings:', e);
+    window._isLoadingAISettings = false; // Ensure flag is cleared even on error
   }
 }
 
@@ -3543,13 +3796,14 @@ function cancelGeneration() {
 // Critical functions are bound at module load time for instant availability
 window.switchTab = switchTab;
 window.revealAnswer = revealAnswer;
-window.gradeAnswer = gradeAnswer;
+window.gradeAnswer = gradeAnswerLegacy;
 window.submitAnswer = submitAnswer;
-window.startSession = startSession;
+window.startSession = startSessionLegacy;
 window.addQuestion = addQuestion;
 window.addDeck = addDeck;
-window.exportData = exportData;
-window.importData = importData;
+// Keep using data-management module implementations
+window.exportData = dmExportData;
+window.importData = dmImportData;
 window.resetAll = resetAll;
 window.saveSettings = saveSettings;
 window.deleteDeck = deleteDeck;
@@ -3580,3 +3834,103 @@ window.generateQuestions = generateQuestions;
 window.toggleQuestionSelection = toggleQuestionSelection;
 window.saveGeneratedQuestions = saveGeneratedQuestions;
 window.cancelGeneration = cancelGeneration;
+window.noteLinesToDraftQuestions = noteLinesToDraftQuestions;
+window.exportNoteAsMarkdown = exportNoteAsMarkdown;
+window.addLine = addLine;
+window.openLearningCalendar = openLearningCalendar;
+window.closeLearningCalendar = closeLearningCalendar;
+// Note: saveNote is handled by addEventListener in ui-handlers.js
+
+// ========== Learning Calendar ==========
+// Legacy implementation kept for reference after module refactor
+// Renamed to avoid duplicate identifier with imported statistics module
+async function openLearningCalendarLegacy() {
+  const roll = await getDailyRollup();
+  const today = new Date();
+  const currentMonth = today.getMonth();
+  const currentYear = today.getFullYear();
+  
+  // Generate calendar for current and previous 2 months
+  const months = [];
+  for (let i = 2; i >= 0; i--) {
+    const date = new Date(currentYear, currentMonth - i, 1);
+    months.push(date);
+  }
+  
+  let calendarHtml = `
+    <div style="text-align:center;margin-bottom:20px">
+      <div style="font-size:14px;color:var(--muted);margin-bottom:8px">학습 활동이 있는 날에는 숫자가 표시됩니다</div>
+    </div>
+  `;
+  
+  months.forEach(monthDate => {
+    const year = monthDate.getFullYear();
+    const month = monthDate.getMonth();
+    const monthName = monthDate.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long' });
+    
+    // Get first day of month and last day
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const startDate = new Date(firstDay);
+    startDate.setDate(startDate.getDate() - firstDay.getDay()); // Start from Sunday
+    
+    calendarHtml += `
+      <div style="margin-bottom:30px">
+        <h4 style="text-align:center;margin:0 0 16px 0;color:var(--text)">${monthName}</h4>
+        <div style="display:grid;grid-template-columns:repeat(7, 1fr);gap:4px;max-width:400px;margin:0 auto">
+          <div style="text-align:center;padding:8px;font-size:12px;color:var(--muted);font-weight:600">일</div>
+          <div style="text-align:center;padding:8px;font-size:12px;color:var(--muted);font-weight:600">월</div>
+          <div style="text-align:center;padding:8px;font-size:12px;color:var(--muted);font-weight:600">화</div>
+          <div style="text-align:center;padding:8px;font-size:12px;color:var(--muted);font-weight:600">수</div>
+          <div style="text-align:center;padding:8px;font-size:12px;color:var(--muted);font-weight:600">목</div>
+          <div style="text-align:center;padding:8px;font-size:12px;color:var(--muted);font-weight:600">금</div>
+          <div style="text-align:center;padding:8px;font-size:12px;color:var(--muted);font-weight:600">토</div>
+    `;
+    
+    // Generate calendar days
+    const currentDate = new Date(startDate);
+    for (let week = 0; week < 6; week++) {
+      for (let day = 0; day < 7; day++) {
+        const dateStr = currentDate.toISOString().slice(0, 10);
+        const dayRoll = roll[dateStr];
+        const hasActivity = dayRoll && dayRoll.total > 0;
+        const isToday = dateStr === todayStr();
+        const isCurrentMonth = currentDate.getMonth() === month;
+        const dayNum = currentDate.getDate();
+        
+        let cellStyle = 'text-align:center;padding:8px;border-radius:6px;min-height:32px;display:flex;align-items:center;justify-content:center;font-size:13px;';
+        
+        if (!isCurrentMonth) {
+          cellStyle += 'color:var(--muted);opacity:0.3;';
+        } else if (isToday) {
+          cellStyle += 'background:var(--accent);color:white;font-weight:bold;';
+        } else if (hasActivity) {
+          cellStyle += 'background:#10b981;color:white;font-weight:600;';
+        } else {
+          cellStyle += 'color:var(--text);';
+        }
+        
+        const content = hasActivity ? (dayRoll.total > 9 ? '9+' : dayRoll.total) : dayNum;
+        calendarHtml += `<div style="${cellStyle}" title="${dateStr}: ${hasActivity ? dayRoll.total + '개 문제 학습' : '학습 없음'}">${content}</div>`;
+        
+        currentDate.setDate(currentDate.getDate() + 1);
+      }
+      // Check if we've covered all days of the month
+      if (currentDate.getMonth() !== month) break;
+    }
+    
+    calendarHtml += `
+        </div>
+      </div>
+    `;
+  });
+  
+  document.getElementById('calendarContent').innerHTML = calendarHtml;
+  document.getElementById('calendarModal').style.display = 'flex';
+}
+
+// Legacy implementation kept for reference after module refactor
+// Renamed to avoid duplicate identifier with imported statistics module
+function closeLearningCalendarLegacy() {
+  document.getElementById('calendarModal').style.display = 'none';
+}

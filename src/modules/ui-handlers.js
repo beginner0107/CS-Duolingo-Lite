@@ -18,11 +18,18 @@ export async function showTab(e, tabName) {
    await new Promise(resolve => setTimeout(resolve, 150));
  }
  
- document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
- document.querySelectorAll('.tab-content').forEach(t => t.style.display = 'none');
- 
- e.target.classList.add('active');
- const newTab = document.getElementById(tabName + 'Tab');
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.style.display = 'none');
+  
+  // Gracefully handle calls without an event object
+  if (e && e.target) {
+    e.target.classList.add('active');
+  } else {
+    // Try to set the corresponding tab button active if possible
+    const btn = document.querySelector(`.tabs .tab[onclick*="'${tabName}'"]`);
+    if (btn) btn.classList.add('active');
+  }
+  const newTab = document.getElementById(tabName + 'Tab');
  newTab.style.display = 'block';
  newTab.style.opacity = '0';
  
@@ -251,6 +258,14 @@ export function bindEvents() {
 
 // Notes UI state
 let currentNoteId = null;
+
+export function getCurrentNoteId() {
+  return currentNoteId;
+}
+
+export function setCurrentNoteId(id) {
+  currentNoteId = id;
+}
 
 function debounce(fn, ms) {
   let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };

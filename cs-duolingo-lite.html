@@ -455,9 +455,9 @@
                 <input type="text" id="noteSource" placeholder="출처 (URL, 책 등)">
                 <textarea id="noteTextarea" style="min-height: 300px;" placeholder="내용을 입력하세요..."></textarea>
                 <div>
-                    <button>줄 추가</button>
+                    <button onclick="addLine()">줄 추가</button>
                     <button onclick="noteLinesToDraftQuestions()">선택→퀴즈</button>
-                    <button onclick="exportNoteAsMarkdown()">MD 내보내기</button>
+                    <button onclick="exportNoteAsMarkdown()">MD 내보기</button>
                     <button class="success">저장</button>
                 </div>
             </div>
@@ -481,6 +481,17 @@
         <button id="editModalCancel" class="secondary">취소</button>
         <button id="editModalSave" class="success">저장</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Learning Calendar Modal -->
+  <div id="calendarModal" class="modal-overlay" style="display:none;">
+    <div class="modal-content" style="max-width:600px;max-height:80vh;overflow-y:auto;">
+      <div class="modal-header">
+        <h3>📅 학습 캘린더</h3>
+        <button onclick="closeLearningCalendar()" class="modal-close">✕</button>
+      </div>
+      <div id="calendarContent" class="modal-body"></div>
     </div>
   </div>
 

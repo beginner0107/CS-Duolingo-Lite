@@ -1,103 +1,116 @@
-// ========== 데이터베이스 설정 (IndexedDB with Dexie) ==========
-const db = new Dexie('CSStudyApp');
-const APP_SCHEMA_VERSION = 51; // App-level schema/meta version (not Dexie version)
+// ========== Database Operations ==========
+// This module re-exports database functions for use by other modules
 
-// Schema versioning - Version 1 (initial schema)
-db.version(1).stores({
-  profile: '++id, xp, streak, lastStudy',
-  decks: '++id, name, created',
-  questions: '++id, deck, type, prompt, answer, keywords, synonyms, explain, created, sortOrder',
-  review: '++id, questionId, ease, interval, due, count, created, updated'
-});
-
-// Schema versioning - Version 2 (add indexes and optimize)
-db.version(2).stores({
-  profile: '++id, xp, streak, lastStudy',
-  decks: '++id, name, created',
-  questions: '++id, deck, type, prompt, answer, keywords, synonyms, explain, created, sortOrder, *tags',
-  review: '++id, questionId, ease, interval, due, count, created, updated'
-});
-
-// Migration hook for version 2
-db.version(2).upgrade(async (trans) => {
-  // Add tags field to existing questions
-  await trans.table('questions').toCollection().modify((question, ref) => {
-    if (!question.tags) {
-      question.tags = [];
-    }
-    if (question.sortOrder === undefined) {
-      question.sortOrder = ref.primKey; // Use primary key as initial sort order
-    }
-  });
-});
-
-// Dexie schema v3: add meta table for app-level metadata
-db.version(3).stores({
-  profile: '++id, xp, streak, lastStudy',
-  decks: '++id, name, created',
-  questions: '++id, deck, type, prompt, answer, keywords, synonyms, explain, created, sortOrder, *tags',
-  review: '++id, questionId, ease, interval, due, count, created, updated',
-  meta: 'key'
-});
-
-// Dexie schema v4: add notes tables
-db.version(4).stores({
-  notes: '++id, deckId, title, source',
-  note_items: '++id, noteId, ts, text, *tags'
-});
-
-// Dexie schema v51: compatibility fix for existing databases
-db.version(51).stores({
-  profile: '++id, xp, streak, lastStudy',
-  decks: '++id, name, created',
-  questions: '++id, deck, type, prompt, answer, keywords, synonyms, explain, created, sortOrder, *tags',
-  review: '++id, questionId, ease, interval, due, count, created, updated',
-  meta: 'key',
-  notes: '++id, deckId, title, source, content, createdAt, updatedAt',
-  note_items: '++id, noteId, ts, text, *tags'
-});
-
-// Migration hook for version 51 - add missing fields to notes
-db.version(51).upgrade(async (trans) => {
-  const notes = await trans.table('notes').toArray();
-  for (const note of notes) {
-    const updates = {};
-    if (!note.content) updates.content = '';
-    if (!note.createdAt) updates.createdAt = new Date();
-    if (!note.updatedAt) updates.updatedAt = new Date();
-    
-    if (Object.keys(updates).length > 0) {
-      await trans.table('notes').update(note.id, updates);
-    }
+// Lazily access the global Dexie instance to avoid import-time errors.
+function getDb() {
+  const db = window.db;
+  if (!db) {
+    throw new Error('Database not initialized. Ensure app.js sets window.db before calling DB methods.');
   }
-});
+  return db;
+}
 
-// Legacy localStorage keys for migration
-const LEGACY_KEY = {
-  PROFILE: 'cs.profile',
-  DECKS: 'cs.decks',
-  QUESTIONS: 'cs.questions',
-  REVIEW: 'cs.review',
-  LAST: 'cs.lastStudy'
-};
+export async function getProfile() {
+  const profiles = await getDb().table('profile').toArray();
+  return profiles.length > 0 ? profiles[0] : { xp: 0, streak: 0, lastStudy: null };
+}
 
-// Meta helpers
-export async function getSchemaVersion() {
-  try {
-    const row = await db.table('meta').get('schemaVersion');
-    return row?.value ?? null;
-  } catch (_) {
-    return null;
+export async function setProfile(profile) {
+  const profiles = await getDb().table('profile').toArray();
+  if (profiles.length > 0) {
+    await getDb().table('profile').update(profiles[0].id, profile);
+  } else {
+    await getDb().table('profile').add(profile);
   }
 }
 
-export async function setSchemaVersion(v) {
-  await db.table('meta').put({ key: 'schemaVersion', value: v });
+export async function getDecks() {
+  return await getDb().table('decks').orderBy('created').toArray();
+}
+
+export async function getDeck(id) {
+  return await getDb().table('decks').get(id);
+}
+
+export async function addDeck(deck) {
+  return await getDb().table('decks').add(deck);
+}
+
+export async function updateDeck(id, updates) {
+  return await getDb().table('decks').update(id, updates);
+}
+
+export async function deleteDeck(id) {
+  return await getDb().table('decks').delete(id);
+}
+
+export async function getQuestions(deckId = null) {
+  let query = getDb().table('questions');
+  if (deckId) {
+    query = query.where('deck').equals(deckId);
+  }
+  return await query.orderBy('sortOrder').toArray();
+}
+
+export async function getQuestion(id) {
+  return await getDb().table('questions').get(id);
+}
+
+export async function addQuestion(question) {
+  return await getDb().table('questions').add(question);
+}
+
+export async function updateQuestion(id, updates) {
+  return await getDb().table('questions').update(id, updates);
+}
+
+export async function deleteQuestion(id) {
+  return await getDb().table('questions').delete(id);
+}
+
+export async function getReview() {
+  return await getDb().table('review').toArray();
+}
+
+export async function getReviewItem(questionId) {
+  return await getDb().table('review').where('questionId').equals(questionId).first();
+}
+
+export async function addReview(review) {
+  return await getDb().table('review').add(review);
+}
+
+export async function updateReview(id, updates) {
+  return await getDb().table('review').update(id, updates);
+}
+
+export async function deleteReview(id) {
+  return await getDb().table('review').delete(id);
+}
+
+export async function getNotes() {
+  return await getDb().table('notes').orderBy('createdAt').toArray();
+}
+
+export async function getNote(id) {
+  return await getDb().table('notes').get(id);
+}
+
+export async function addNote(note) {
+  return await getDb().table('notes').add(note);
+}
+
+export async function updateNote(id, updates) {
+  return await getDb().table('notes').update(id, updates);
+}
+
+export async function deleteNote(id) {
+  return await getDb().table('notes').delete(id);
 }
 
 export async function getDailyRollup() {
   try {
-    const row = await db.table('meta').get('dailyRollup');
+    const row = await getDb().table('meta').get('dailyRollup');
     return row?.value || {};
   } catch (_) {
     return {};
@@ -105,232 +118,5 @@ export async function getDailyRollup() {
 }
 
 export async function setDailyRollup(obj) {
-  await db.table('meta').put({ key: 'dailyRollup', value: obj });
+  await getDb().table('meta').put({ key: 'dailyRollup', value: obj });
 }
-
-// ========== Settings & Daily Stats ==========
-const SETTINGS_KEY = 'cs.settings';
-const DAILY_STATS_KEY = 'cs.dailyStats';
-const DEFAULT_DAILY_REVIEW_LIMIT = 30; // configurable via localStorage settings
-const EASE_LOW_THRESHOLD = 1.5; // heuristic for low-confidence
-const SHORT_FUZZY = 0.85; // fuzzy threshold for SHORT answers and synonyms
-
-export function getSettings() {
-  try {
-    const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
-    return {
-      dailyReviewLimit: Number.isFinite(s.dailyReviewLimit) ? s.dailyReviewLimit : DEFAULT_DAILY_REVIEW_LIMIT,
-    };
-  } catch (_) {
-    return { dailyReviewLimit: DEFAULT_DAILY_REVIEW_LIMIT };
-  }
-}
-
-export function setSettings(next) {
-  const current = getSettings();
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...current, ...next }));
-}
-
-export function todayStr() {
-  const d = new Date();
-  return d.toISOString().slice(0, 10);
-}
-
-export function getDailyStats() {
-  const today = todayStr();
-  try {
-    const raw = JSON.parse(localStorage.getItem(DAILY_STATS_KEY) || '{}');
-    if (!raw.date || raw.date !== today) {
-      return { date: today, reviewsDone: 0, totalDone: 0 };
-    }
-    return { date: raw.date, reviewsDone: raw.reviewsDone || 0, totalDone: raw.totalDone || 0 };
-  } catch (_) {
-    return { date: today, reviewsDone: 0, totalDone: 0 };
-  }
-}
-
-export function setDailyStats(stats) {
-  localStorage.setItem(DAILY_STATS_KEY, JSON.stringify(stats));
-}
-
-// ========== 데이터 마이그레이션 ==========
-export async function migrateFromLocalStorage() {
-	try {
-		// Idempotent check using meta.schemaVersion
-		const currentMetaVersion = await getSchemaVersion();
-		if (currentMetaVersion && currentMetaVersion >= APP_SCHEMA_VERSION) {
-			return;
-		}
-
-		console.log('Starting localStorage to IndexedDB migration...');
-
-		// Migrate profile data
-		const legacyProfileRaw = localStorage.getItem(LEGACY_KEY.PROFILE);
-		if (legacyProfileRaw) {
-			const legacyProfile = JSON.parse(legacyProfileRaw);
-			const legacyLastStudy = localStorage.getItem(LEGACY_KEY.LAST);
-			const existingProfile = await db.profile.toCollection().first();
-			if (!existingProfile) {
-				await db.profile.add({
-					xp: legacyProfile.xp || 0,
-					streak: legacyProfile.streak || 0,
-					lastStudy: legacyLastStudy || null
-				});
-			}
-		}
-
-		// Migrate decks data
-		const legacyDecksRaw = localStorage.getItem(LEGACY_KEY.DECKS);
-		const deckIdMap = {};
-		if (legacyDecksRaw && (await db.decks.count()) === 0) {
-			const legacyDecks = JSON.parse(legacyDecksRaw);
-			for (const deck of legacyDecks) {
-				const newId = await db.decks.add({ name: deck.name, created: new Date() });
-				deckIdMap[deck.id] = newId;
-			}
-		}
-
-		// Migrate questions data
-		const legacyQuestionsRaw = localStorage.getItem(LEGACY_KEY.QUESTIONS);
-		if (legacyQuestionsRaw && (await db.questions.count()) === 0) {
-			const legacyQuestions = JSON.parse(legacyQuestionsRaw);
-      let miscDeckId = null;
-			for (const question of legacyQuestions) {
-        let deckId = deckIdMap[question.deck];
-        if (!deckId) {
-            if (miscDeckId === null) {
-                const miscDeck = await db.decks.where('name').equalsIgnoreCase('Miscellaneous').first();
-                miscDeckId = miscDeck ? miscDeck.id : await db.decks.add({ name: 'Miscellaneous', created: new Date() });
-            }
-            deckId = miscDeckId;
-        }
-
-				await db.questions.add({
-					deck: deckId,
-					type: question.type,
-					prompt: question.prompt,
-					answer: question.answer,
-					keywords: question.keywords || [],
-					synonyms: question.synonyms || [],
-					explain: question.explain || '',
-					tags: [],
-					created: new Date()
-				});
-			}
-		}
-
-		// Clear localStorage after successful migration
-		Object.values(LEGACY_KEY).forEach(k => localStorage.removeItem(k));
-
-		await setSchemaVersion(APP_SCHEMA_VERSION);
-		console.log('Migration completed successfully to meta v' + APP_SCHEMA_VERSION);
-	} catch (e) {
-		console.error('Migration failed:', e);
-		throw e;
-	}
-}
-
-// ========== Database Accessors ==========
-export async function getDecks() {
-  return await db.decks.orderBy('created').reverse().toArray();
-}
-
-export async function setDecks(decks) {
-  // Not implemented - use individual operations
-  throw new Error('setDecks deprecated - use individual deck operations');
-}
-
-export async function getQuestions() {
-  return await db.questions.toArray();
-}
-
-export async function setQuestions(questions) {
-  // Not implemented - use individual operations
-  throw new Error('setQuestions deprecated - use individual question operations');
-}
-
-export async function getQuestion(id) {
-  return await db.questions.get(Number(id));
-}
-
-export async function updateQuestion(id, updates) {
-  return await db.questions.update(Number(id), { ...updates, updated: new Date() });
-}
-
-export async function getProfile() {
-  return await db.profile.toCollection().first() || { xp: 0, streak: 0, lastStudy: null };
-}
-
-export async function setProfile(profile) {
-  const existing = await db.profile.toCollection().first();
-  if (existing) {
-    await db.profile.update(existing.id, profile);
-  } else {
-    await db.profile.add(profile);
-  }
-}
-
-export async function getReview() {
-  return await db.review.toArray();
-}
-
-export async function setReview(questionId, reviewData) {
-  const existing = await db.review.where('questionId').equals(questionId).first();
-  if (existing) {
-    await db.review.update(existing.id, { ...reviewData, updated: new Date() });
-  } else {
-    await db.review.add({ ...reviewData, questionId, created: new Date(), updated: new Date() });
-  }
-}
-
-// ========== Notes CRUD ==========
-export async function getNotes(filter = {}) {
-  const { search = '', deckId = '' } = filter;
-  let coll = db.notes.toCollection();
-  if (deckId) {
-    coll = db.notes.where('deckId').equals(Number(deckId));
-  }
-  let notes = await coll.toArray();
-  const q = (search || '').toLowerCase();
-  if (q) {
-    notes = notes.filter(n =>
-      (n.title || '').toLowerCase().includes(q) ||
-      (n.source || '').toLowerCase().includes(q) ||
-      (n.content || '').toLowerCase().includes(q)
-    );
-  }
-  // Sort by updatedAt desc, then createdAt desc, then id desc
-  notes.sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0) || (b.id - a.id));
-  return notes;
-}
-
-export async function getNote(id) {
-  return await db.notes.get(Number(id));
-}
-
-export async function addNote(note) {
-  const now = new Date();
-  const row = {
-    deckId: note.deckId ? Number(note.deckId) : null,
-    title: note.title || '',
-    source: note.source || '',
-    content: note.content || '',
-    createdAt: now,
-    updatedAt: now
-  };
-  const id = await db.notes.add(row);
-  return id;
-}
-
-export async function updateNote(id, patch) {
-  const row = { ...patch, updatedAt: new Date() };
-  return await db.notes.update(Number(id), row);
-}
-
-export async function deleteNote(id) {
-  await db.notes.delete(Number(id));
-  try { await db.note_items.where('noteId').equals(Number(id)).delete(); } catch (_) {}
-}
-
-// Export constants and db instance
-export { db, APP_SCHEMA_VERSION, EASE_LOW_THRESHOLD, SHORT_FUZZY };
