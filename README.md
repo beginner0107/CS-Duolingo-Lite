@@ -24,6 +24,14 @@ CS Study App은 SM-2 Spaced repetition 알고리즘을 구현하여 컴퓨터 �
   - Auto 모드: 불확실한 답안을 Cloud로 전송
   - Fallback 시스템: Cloud 실패 시 Local로 자동 전환
 
+- **🆕 AI 문제 생성**
+  - **주제 기반 생성**: 컴퓨터 과학 모든 분야 지원 (운영체제, 네트워크, 알고리즘 등)
+  - **난이도 조절**: 초급/중급/고급 3단계 난이도 설정
+  - **다양한 문제 유형**: OX, 단답형, 키워드형 문제 자동 생성
+  - **미리보기 & 선택**: 생성된 문제를 검토하고 원하는 것만 선택 저장
+  - **해설 포함**: 모든 생성 문제에 상세한 한국어 해설 자동 생성
+  - **덱 통합**: 기존 덱 시스템과 완벽 연동하여 즉시 학습 가능
+
 - **SM-2 Algorithm 통합**
   - 적응형 복습 스케줄링
   - 4단계 난이도 grading (Again/Hard/Good/Easy)
@@ -116,7 +124,7 @@ open http://localhost:8000/cs-duolingo-lite.html
 ```
 
 ### AI 기능 설정 (선택사항)
-AI 채점 기능을 사용하려면 애플리케이션의 설정 패널에서 구성하세요:
+AI 채점 및 문제 생성 기능을 사용하려면 애플리케이션의 설정 패널에서 구성하세요:
 
 1. **관리 > 설정** 탭으로 이동
 2. **AI 설정** 카드에서 다음 정보 입력:
@@ -126,6 +134,20 @@ AI 채점 기능을 사용하려면 애플리케이션의 설정 패널에서 �
 3. **AI 설정 저장** 버튼 클릭
 4. **연결 테스트** 버튼으로 설정 확인
 5. **AI 모드**를 Local/Auto/Cloud 중 선택
+
+#### AI 문제 생성 사용법
+AI 설정 완료 후 문제 자동 생성:
+
+1. **관리** 탭의 **🤖 AI 문제 생성** 카드로 이동
+2. 다음 항목 설정:
+   - **주제**: CS 분야 입력 (예: "운영체제", "네트워크", "자료구조")
+   - **난이도**: 초급/중급/고급 선택
+   - **문제 유형**: OX/단답형/키워드형 선택
+   - **덱 선택**: 저장할 덱 지정
+   - **문제 수**: 3~15개 선택
+3. **🚀 문제 생성** 버튼 클릭
+4. 생성된 문제 미리보기에서 원하는 문제 선택
+5. **선택된 문제 저장** 버튼으로 덱에 추가
 
 지원되는 AI 모델:
 - **OpenAI**: gpt-4o-mini, gpt-4o, gpt-3.5-turbo
@@ -171,7 +193,7 @@ cs-study-app/
 │       ├── scoring.js        # Answer checking & grading
 │       └── ui-handlers.js    # Event handling & UI management
 ├── ai/
-│   ├── adapter.js           # AI service adapters (Cloud/Local)
+│   ├── adapter.js           # AI service adapters (Cloud/Local) + Question generation
 │   ├── index.js            # AI factory and configuration
 │   ├── router.js           # AI routing logic (Auto mode)
 │   └── prompts.js          # AI prompt templates
@@ -219,7 +241,7 @@ docker-compose up frontend backend
 | `src/modules/spaced-repetition.js` | Learning engine | SM-2 algorithm, scheduling |
 | `src/modules/scoring.js` | Grading engine | Answer checking, fuzzy matching, feedback |
 | `src/modules/ui-handlers.js` | Presentation layer | Event binding, DOM manipulation, animations |
-| `ai/adapter.js` | AI services | Cloud/Local AI adapters, fallback logic |
+| `ai/adapter.js` | AI services | Cloud/Local AI adapters, question generation, fallback logic |
 | `ai/router.js` | AI routing | Auto mode logic, metrics tracking |
 | `styles.css` | Styling | Theme variables, responsive design, animations |
 
@@ -242,7 +264,7 @@ function nextSchedule(correct, state, grade = null) {
 }
 ```
 
-### AI 답안 채점
+### AI 답안 채점 & 문제 생성
 ```javascript
 // Local 채점 (기존 규칙 기반)
 function gradeWithFeedback(question, userAnswer) {
@@ -259,6 +281,20 @@ async function decideGrade(input) {
     return await CloudAdapter.grade(input);
   }
   return localResult;
+}
+
+// 🆕 AI 문제 생성
+async function generateQuestions(input) {
+  const prompt = buildGenerationPrompt(input.topic, input.difficulty, input.questionType, input.count);
+  const adapter = getAdapter('cloud');
+  
+  const result = await adapter.generateQuestions({
+    prompt: prompt,
+    questionType: input.questionType,
+    count: input.count
+  });
+  
+  return result.questions; // [{ prompt, answer, explanation, keywords? }]
 }
 ```
 
@@ -327,9 +363,19 @@ ngrok http 8000
 - **PWA Audit**: Lighthouse > Progressive Web App category
 - **Module Loading**: ES6 module 의존성 분석을 위한 Network tab
 
-## 최근 업데이트 (v2.1)
+## 최근 업데이트 (v2.2)
 
-### UI/UX 개선사항
+### 🆕 AI 문제 생성 기능
+- **자동 문제 생성**: 주제만 입력하면 고품질 CS 문제 자동 생성
+- **지능형 난이도 조절**: 초급/중급/고급 3단계 난이도별 문제 생성
+- **다양한 문제 유형**: OX, 단답형, 키워드형 문제 타입 지원
+- **미리보기 시스템**: 생성된 문제를 검토하고 선택적으로 저장
+- **완벽한 덱 통합**: 기존 덱 시스템과 seamless 연동
+- **한국어 해설**: 모든 생성 문제에 상세한 한국어 해설 포함
+
+### 이전 업데이트 (v2.1)
+
+#### UI/UX 개선사항
 - **문제 입력 방식 개선**: OX 문제는 O/X dropdown 선택, 단답형은 해설 기반 입력으로 변경
 - **AI 설정 자동 저장**: Provider 및 Model 변경 시 자동으로 설정 저장
 - **탭 전환 개선**: 학습 탭 전환 시 세션 자동 리셋으로 다른 탭의 변경사항 즉시 반영
@@ -337,7 +383,7 @@ ngrok http 8000
 - **문제 타입 간소화**: KEYWORD와 ESSAY 타입 통합으로 사용자 혼동 방지
 - **피드백 UI 개선**: 한국어 기반 채점 결과 표시 및 괄호 형식 개선
 
-### 기술적 개선사항
+#### 기술적 개선사항
 - **AI 모드 최적화**: Local 모드에서 불필요한 AI API 호출 제거
 - **Docker 지원**: 개발 및 배포를 위한 Docker 컨테이너 설정 추가
 - **모듈화 개선**: UI handlers 및 scoring 로직 분리로 유지보수성 향상

@@ -1646,6 +1646,9 @@ async function updateDeckSelects() {
 
  const qNoteDeckFilter = document.getElementById('qNoteDeckFilter');
  if (qNoteDeckFilter) qNoteDeckFilter.innerHTML = htmlWithAll;
+
+ const aiDeckSelect = document.getElementById('aiDeckSelect');
+ if (aiDeckSelect) aiDeckSelect.innerHTML = html;
 }
 
 async function updateDeckList() {
@@ -3324,6 +3327,218 @@ async function testAIConnection() {
   }
 }
 
+// ========== AI Question Generation ==========
+let generatedQuestions = [];
+
+async function generateQuestions() {
+  const topic = document.getElementById('aiTopic').value.trim();
+  const difficulty = document.getElementById('aiDifficulty').value;
+  const questionType = document.getElementById('aiQuestionType').value;
+  const deckId = document.getElementById('aiDeckSelect').value;
+  const count = parseInt(document.getElementById('aiQuestionCount').value);
+
+  if (!topic) {
+    showToast('주제를 입력해주세요', 'danger');
+    return;
+  }
+
+  if (!deckId) {
+    showToast('덱을 선택해주세요', 'danger');
+    return;
+  }
+
+  const generateBtn = document.getElementById('generateBtn');
+  const generateBtnText = document.getElementById('generateBtnText');
+  const originalText = generateBtnText.textContent;
+
+  try {
+    generateBtn.disabled = true;
+    generateBtnText.textContent = '⏳ 생성 중...';
+
+    const config = window.__AI_CONF;
+    if (!config || !config.baseUrl || !config.apiKey) {
+      throw new Error('AI 설정을 먼저 구성해주세요');
+    }
+
+    const { getAdapter } = await import('./ai/index.js');
+    const adapter = getAdapter('cloud');
+
+    const prompt = buildGenerationPrompt(topic, difficulty, questionType, count);
+    
+    const result = await adapter.generateQuestions({
+      prompt: prompt,
+      questionType: questionType,
+      count: count
+    });
+
+    if (result.used !== 'cloud') {
+      throw new Error('AI 문제 생성은 클라우드 모드에서만 지원됩니다');
+    }
+
+    generatedQuestions = result.questions || [];
+    displayGeneratedQuestions();
+    
+    showToast(`${generatedQuestions.length}개 문제가 생성되었습니다`, 'success');
+
+  } catch (error) {
+    console.error('Question generation failed:', error);
+    
+    // Provide more user-friendly error messages
+    let userMessage = error.message;
+    if (error.message.includes('JSON parsing failed')) {
+      userMessage = 'AI가 올바른 형식으로 응답하지 않았습니다. 다시 시도해주세요.';
+    } else if (error.message.includes('HTTP 500')) {
+      userMessage = 'AI 서비스에 일시적인 문제가 있습니다. 잠시 후 다시 시도해주세요.';
+    } else if (error.message.includes('HTTP 401')) {
+      userMessage = 'API 키가 유효하지 않습니다. AI 설정을 확인해주세요.';
+    } else if (error.message.includes('HTTP 429')) {
+      userMessage = 'API 요청 한도에 도달했습니다. 잠시 후 다시 시도해주세요.';
+    } else if (error.message.includes('timeout')) {
+      userMessage = '요청 시간이 초과되었습니다. 문제 수를 줄이거나 다시 시도해주세요.';
+    } else if (error.message.includes('AI configuration not found')) {
+      userMessage = 'AI 설정이 필요합니다. 관리 탭에서 AI 설정을 완료해주세요.';
+    }
+    
+    showToast(`생성 실패: ${userMessage}`, 'danger');
+  } finally {
+    generateBtn.disabled = false;
+    generateBtnText.textContent = originalText;
+  }
+}
+
+function buildGenerationPrompt(topic, difficulty, questionType, count) {
+  const difficultyMap = {
+    'beginner': '초급 (기본 개념과 정의 중심)',
+    'intermediate': '중급 (응용과 분석 중심)', 
+    'advanced': '고급 (심화 이론과 복합 개념 중심)'
+  };
+
+  const typeMap = {
+    'OX': 'OX 문제 (참/거짓)',
+    'SHORT': '단답형 문제 (간단한 답변)',
+    'KEYWORD': '키워드형 문제 (핵심 단어들로 채점)'
+  };
+
+  return `컴퓨터 과학 주제 "${topic}"에 대해 ${difficultyMap[difficulty]} ${typeMap[questionType]}을 ${count}개 생성해주세요.
+
+**중요: 반드시 아래의 정확한 JSON 형식으로만 응답하세요. 다른 텍스트나 설명은 포함하지 마세요.**
+
+{
+  "questions": [
+    {
+      "prompt": "문제 내용",
+      "answer": "${questionType === 'OX' ? 'true 또는 false' : '정답 내용'}",
+      ${questionType === 'KEYWORD' ? '"keywords": ["키워드1", "키워드2", "키워드3"],' : ''}
+      "explanation": "상세한 해설"
+    }${count > 1 ? ',\n    {\n      "prompt": "두 번째 문제...",\n      "answer": "정답",\n      "explanation": "해설"\n    }' : ''}
+  ]
+}
+
+**필수 요구사항:**
+- 모든 문제는 한국어로 작성
+- explanation은 개념을 명확히 설명하는 상세한 해설
+- ${questionType === 'OX' ? 'answer는 반드시 true 또는 false (문자열 아님)' : '정확한 정답 작성'}
+- ${questionType === 'KEYWORD' ? 'keywords는 3-5개의 핵심 키워드 배열' : ''}
+- 실제 CS 시험/면접 수준의 고품질 문제
+- JSON 형식 엄격 준수 (문법 오류 없이)
+
+**응답 예시:**`;
+}
+
+function displayGeneratedQuestions() {
+  const previewDiv = document.getElementById('generatedPreview');
+  const previewList = document.getElementById('previewList');
+
+  if (generatedQuestions.length === 0) {
+    previewDiv.style.display = 'none';
+    return;
+  }
+
+  let html = '';
+  generatedQuestions.forEach((q, index) => {
+    const isSelected = q.selected !== false;
+    html += `
+      <div class="question-item ${isSelected ? 'selected' : ''}" style="border-left: ${isSelected ? '4px solid var(--primary)' : '4px solid var(--muted)'}">
+        <div style="display:flex;align-items:flex-start;gap:8px">
+          <input type="checkbox" ${isSelected ? 'checked' : ''} onchange="toggleQuestionSelection(${index})">
+          <div style="flex:1">
+            <strong>${q.prompt}</strong>
+            <div style="font-size:12px;color:var(--muted);margin:4px 0">
+              정답: ${q.answer === true ? 'O (참)' : q.answer === false ? 'X (거짓)' : q.answer}
+              ${q.keywords ? ` | 키워드: ${q.keywords.join(', ')}` : ''}
+            </div>
+            <div style="font-size:12px;color:var(--muted)">${q.explanation}</div>
+          </div>
+        </div>
+      </div>
+    `;
+  });
+
+  previewList.innerHTML = html;
+  previewDiv.style.display = 'block';
+}
+
+function toggleQuestionSelection(index) {
+  if (generatedQuestions[index]) {
+    generatedQuestions[index].selected = !generatedQuestions[index].selected;
+    displayGeneratedQuestions();
+  }
+}
+
+async function saveGeneratedQuestions() {
+  const selectedQuestions = generatedQuestions.filter(q => q.selected !== false);
+  
+  if (selectedQuestions.length === 0) {
+    showToast('저장할 문제를 선택해주세요', 'warning');
+    return;
+  }
+
+  const deckId = document.getElementById('aiDeckSelect').value;
+  const questionType = document.getElementById('aiQuestionType').value;
+
+  try {
+    let savedCount = 0;
+    
+    for (const q of selectedQuestions) {
+      const questionData = {
+        deck: parseInt(deckId),
+        type: questionType,
+        prompt: q.prompt,
+        answer: questionType === 'OX' ? q.answer : String(q.answer), // OX는 boolean, 나머지는 string
+        explain: q.explanation,
+        created: Date.now(),
+        tags: ['ai-generated'],
+        generated: true
+      };
+
+      if (questionType === 'KEYWORD' && q.keywords) {
+        questionData.keywords = Array.isArray(q.keywords) ? q.keywords.join(',') : String(q.keywords);
+      }
+
+      await db.questions.add(questionData);
+      savedCount++;
+    }
+
+    showToast(`${savedCount}개 문제가 저장되었습니다`, 'success');
+    
+    // Clear preview and refresh UI
+    cancelGeneration();
+    await updateQuestionList();
+    
+  } catch (error) {
+    console.error('Failed to save questions:', error);
+    showToast('문제 저장 중 오류가 발생했습니다', 'danger');
+  }
+}
+
+function cancelGeneration() {
+  generatedQuestions = [];
+  document.getElementById('generatedPreview').style.display = 'none';
+  
+  // Clear form
+  document.getElementById('aiTopic').value = '';
+}
+
 // Additional global bindings for immediate HTML compatibility
 // Critical functions are bound at module load time for instant availability
 window.switchTab = switchTab;
@@ -3359,3 +3574,9 @@ window.handleDragStart = handleDragStart;
 window.handleDragOver = handleDragOver;
 window.handleDrop = handleDrop;
 window.handleDragEnd = handleDragEnd;
+window.saveAISettings = saveAISettings;
+window.testAIConnection = testAIConnection;
+window.generateQuestions = generateQuestions;
+window.toggleQuestionSelection = toggleQuestionSelection;
+window.saveGeneratedQuestions = saveGeneratedQuestions;
+window.cancelGeneration = cancelGeneration;
