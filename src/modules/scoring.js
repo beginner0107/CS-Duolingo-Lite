@@ -174,7 +174,7 @@ export function gradeWithFeedback(q, userAnswer) {
     };
   }
   
-  if (q.type === 'KEYWORD' || q.type === 'ESSAY') {
+  if (q.type === 'ESSAY' || q.type === 'KEYWORD') {
     if (!q.keywords?.length) {
       return { correct: false, score: 0, hits: [], misses: [], notes: 'No keywords defined' };
     }
@@ -289,8 +289,8 @@ export function gradeQuestion(q, userAnswer) {
     return { correct: false, score: 0, hits: [], misses: [q.answer] };
   }
 
-  // KEYWORD: N-of-M with regex and fuzzy; success if either pass ratio or required count
-  if (q.type === 'KEYWORD') {
+  // ESSAY/KEYWORD: N-of-M with regex and fuzzy; success if either pass ratio or required count
+  if (q.type === 'ESSAY' || q.type === 'KEYWORD') {
     if (!q.keywords?.length) {
       return { correct: false, score: 0, hits: [], misses: [], notes: 'No keywords defined' };
     }
