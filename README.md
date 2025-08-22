@@ -14,9 +14,9 @@ CS Study App은 SM-2 Spaced repetition 알고리즘을 구현하여 컴퓨터 �
 
 ### 핵심 학습 시스템
 - **다양한 문제 유형**
-  - OX (True/False)
-  - Short Answer (fuzzy matching 및 synonyms 지원)
-  - Keyword 기반 (N-of-M grading system)
+  - OX (O/X 선택형): 직관적인 dropdown 선택 인터페이스
+  - Short Answer (단답형): fuzzy matching 및 synonyms 지원, 해설 기반 답안
+  - Essay (서술형): 키워드 기반 N-of-M grading system
 
 - **AI 지원 답안 채점**
   - Local 채점: 기존 규칙 기반 알고리즘
@@ -36,6 +36,8 @@ CS Study App은 SM-2 Spaced repetition 알고리즘을 구현하여 컴퓨터 �
 - **Drag & Drop**: 관리 interface에서 문제 순서 변경
 - **Visual Feedback**: Loading states, animations, progress indicators
 - **AI 설정 UI**: 사용자 친화적인 AI provider 및 API key 관리
+- **개선된 문제 입력**: OX 문제는 O/X dropdown, 단답형은 해설 기반 입력
+- **실시간 탭 동기화**: 탭 전환 시 학습 세션 자동 리셋으로 변경사항 즉시 반영
 
 ### Data 관리
 - **Modular Architecture**: Database, spaced repetition, UI handling을 위한 ES6 modules
@@ -54,6 +56,7 @@ CS Study App은 SM-2 Spaced repetition 알고리즘을 구현하여 컴퓨터 �
 - **Service Worker**: Background sync 및 caching strategies
 - **App Installation**: 기기에 네이티브 같은 설치
 - **Push Notifications**: 학습 리마인더 및 스케줄링 알림
+- **Docker 지원**: 개발 및 배포를 위한 컨테이너화
 
 ## 기술 Stack
 
@@ -80,11 +83,25 @@ CS Study App은 SM-2 Spaced repetition 알고리즘을 구현하여 컴퓨터 �
 - HTTPS 환경 (PWA 기능 사용 시 필수)
 
 ### 로컬 개발
+
+#### Docker 사용 (권장)
 ```bash
 # Repository clone
 git clone https://github.com/your-username/cs-study-app.git
 cd cs-study-app
 
+# Frontend PWA 실행
+docker-compose up frontend
+
+# 또는 Backend API와 함께 실행
+docker-compose up frontend backend
+
+# Application 접속
+open http://localhost:8000/cs-duolingo-lite.html
+```
+
+#### 직접 설치
+```bash
 # Local server 시작 (Python)
 python -m http.server 8000
 
@@ -118,6 +135,18 @@ AI 채점 기능을 사용하려면 애플리케이션의 설정 패널에서 �
 **보안 참고**: API 키는 브라우저의 localStorage에만 저장되며 서버로 전송되지 않습니다.
 
 ### Production 배포
+
+#### Docker 배포 (권장)
+```bash
+# Production build 및 실행
+docker-compose --profile production up frontend-prod
+
+# 또는 표준 Docker 명령어
+docker build -t cs-study-app .
+docker run -p 8000:8000 cs-study-app
+```
+
+#### 전통적 배포
 1. HTTPS를 지원하는 web server에 파일 업로드
 2. `.js` 및 `.json` 파일의 적절한 MIME types 확인
 3. `sw.js`에서 service worker scope 구성
@@ -159,15 +188,27 @@ cs-study-app/
 ```
 
 ### 선택 사항: SQLite API 서버 실행
+
+#### Docker 사용
+```bash
+# Backend API 서버 실행
+docker-compose up backend
+
+# Frontend와 함께 실행
+docker-compose up frontend backend
+```
+
+#### 직접 설치
 - 의존성 설치: `npm i express sqlite3 cors node-fetch`
 - 실행: `node server/index.js` (기본 포트 5174)
-- REST 엔드포인트:
-  - `GET /api/questions`
-  - `GET /api/questions/:id`
-  - `POST /api/questions`
-  - `PUT /api/questions/:id`
-  - `DELETE /api/questions/:id`
-  - `POST /api/grade/essay` (OpenAI 기반 서술형 채점)
+
+#### REST 엔드포인트
+- `GET /api/questions`
+- `GET /api/questions/:id`
+- `POST /api/questions`
+- `PUT /api/questions/:id`
+- `DELETE /api/questions/:id`
+- `POST /api/grade/essay` (OpenAI 기반 서술형 채점)
 
 ### 주요 구성 요소
 
@@ -285,6 +326,21 @@ ngrok http 8000
 - **Service Worker**: Application > Service Workers > Update/Unregister
 - **PWA Audit**: Lighthouse > Progressive Web App category
 - **Module Loading**: ES6 module 의존성 분석을 위한 Network tab
+
+## 최근 업데이트 (v2.1)
+
+### UI/UX 개선사항
+- **문제 입력 방식 개선**: OX 문제는 O/X dropdown 선택, 단답형은 해설 기반 입력으로 변경
+- **AI 설정 자동 저장**: Provider 및 Model 변경 시 자동으로 설정 저장
+- **탭 전환 개선**: 학습 탭 전환 시 세션 자동 리셋으로 다른 탭의 변경사항 즉시 반영
+- **연속 학습 기록 수정**: Streak 카운트 로직 개선으로 정확한 연속 학습 일수 표시
+- **문제 타입 간소화**: KEYWORD와 ESSAY 타입 통합으로 사용자 혼동 방지
+- **피드백 UI 개선**: 한국어 기반 채점 결과 표시 및 괄호 형식 개선
+
+### 기술적 개선사항
+- **AI 모드 최적화**: Local 모드에서 불필요한 AI API 호출 제거
+- **Docker 지원**: 개발 및 배포를 위한 Docker 컨테이너 설정 추가
+- **모듈화 개선**: UI handlers 및 scoring 로직 분리로 유지보수성 향상
 
 ## 기여하기
 
