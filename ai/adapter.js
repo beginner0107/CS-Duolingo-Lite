@@ -34,14 +34,14 @@ export class CloudAdapter {
       throw new Error('AI configuration not found. Set window.__AI_CONF with baseUrl, apiKey, provider, model');
     }
     
-    const systemPrompt = "You are a bilingual (KR/EN) grader. Return strict JSON only, no prose. Score ∈ [0,1]. correct=true if score≥0.75. Consider synonyms and meaning.";
+    const systemPrompt = "You are a bilingual (KR/EN) grader. Return strict JSON only, no prose. Score ∈ [0,1]. correct=true if score≥0.75. Consider synonyms and meaning. Respond rationale in Korean.";
     
     const userPrompt = `Question: ${input.prompt}
 Reference: ${input.reference?.answer || 'N/A'}
 Keywords (optional): ${JSON.stringify(input.reference?.keywords || [])}
 
 Output format (MUST):
-{"score":0.0,"correct":false,"rationale":"short reason in KR or EN"}`;
+{"score":0.0,"correct":false,"rationale":"한국어로 간단한 설명"}`;
 
     const requestBody = this._buildRequestBody(config, systemPrompt, userPrompt);
     
@@ -214,14 +214,14 @@ export class LocalAdapter {
     
     let rationale;
     if (question.type === 'KEYWORD' && feedback.hits.length > 0) {
-      rationale = `Matched keywords: ${feedback.hits.join(', ')}`;
+      rationale = `일치 keyword: ${feedback.hits.join(', ')}`;
       if (feedback.misses.length > 0) {
-        rationale += ` | Missing: ${feedback.misses.join(', ')}`;
+        rationale += ` | 누락: ${feedback.misses.join(', ')}`;
       }
     } else if (feedback.correct) {
-      rationale = question.type === 'SHORT' ? 'Answer matches expected response' : 'Correct answer';
+      rationale = question.type === 'SHORT' ? '답변이 예상 응답과 일치함' : '정답';
     } else {
-      rationale = question.type === 'SHORT' ? 'Answer does not match expected response' : 'Incorrect answer';
+      rationale = question.type === 'SHORT' ? '답변이 예상 응답과 일치하지 않음' : '오답';
     }
     
     return {

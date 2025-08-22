@@ -890,27 +890,28 @@ async function submitAnswer(userAnswer) {
   const feedback = await gradeQuestionAsync(q, userAnswer);
   const correct = feedback.correct === true;
   
-  // Optional AI grading for enhanced feedback
+  // Optional AI grading for enhanced feedback (only for Auto/Cloud modes)
   let aiResult = null;
   try {
     const aiMode = localStorage.getItem('aiMode') || 'local';
-    const input = {
-      prompt: userAnswer,
-      reference: { answer: q.answer, keywords: q.keywords }
-    };
     
-    if (aiMode === 'auto') {
-      const { decideGrade } = await import('./ai/router.js');
-      aiResult = await decideGrade(input);
-    } else if (aiMode === 'local') {
-      const { getAdapter } = await import('./ai/index.js');
-      aiResult = await getAdapter('local').grade(input);
-    } else if (aiMode === 'cloud') {
-      const { getAdapter } = await import('./ai/index.js');
-      aiResult = await getAdapter('cloud').grade(input);
+    // Skip AI processing entirely for local mode
+    if (aiMode !== 'local') {
+      const input = {
+        prompt: userAnswer,
+        reference: { answer: q.answer, keywords: q.keywords }
+      };
+      
+      if (aiMode === 'auto') {
+        const { decideGrade } = await import('./ai/router.js');
+        aiResult = await decideGrade(input);
+      } else if (aiMode === 'cloud') {
+        const { getAdapter } = await import('./ai/index.js');
+        aiResult = await getAdapter('cloud').grade(input);
+      }
+      
+      window._lastAiResult = aiResult;
     }
-    
-    window._lastAiResult = aiResult;
   } catch (e) { /* AI grading optional */ }
   
   // 점수 & XP (temporary for initial feedback)
@@ -1160,11 +1161,11 @@ async function showResult(question, userAnswer, feedback) {
   
   // Add compact feedback line if available
   if (feedback) {
-    const hitsStr = feedback.hits.length ? feedback.hits.join(',') : 'none';
-    const missesStr = feedback.misses.length ? feedback.misses.join(',') : 'none';
+    const hitsStr = feedback.hits.length ? feedback.hits.join(', ') : '없음';
+    const missesStr = feedback.misses.length ? feedback.misses.join(', ') : '없음';
     const scoreLabel = question.type === 'ESSAY' ? `${Math.round((feedback.score || 0) * 100)}/100` : feedback.score.toFixed(2);
     html += `<div style="font-size:14px;color:var(--muted);margin-bottom:8px">`;
-    html += `Score: ${scoreLabel} • Hits: {${hitsStr}} • Misses: {${missesStr}}${feedback.notes ? ' • ' + feedback.notes : ''}`;
+    html += `점수: ${scoreLabel} • 일치: [${hitsStr}] • 누락: [${missesStr}]${feedback.notes ? ' • ' + feedback.notes : ''}`;
     html += `</div>`;
   }
   
@@ -2672,6 +2673,7 @@ document.addEventListener('DOMContentLoaded', async function() {
   // AI-related global assignments and event listeners
   Object.assign(window, { saveAISettings, testAIConnection });
   document.getElementById('aiProvider')?.addEventListener('change', updateModelOptions);
+  document.getElementById('aiModel')?.addEventListener('change', autoSaveAISettings);
   
   // Initialize UI handlers and events
   bindEvents();
@@ -3003,6 +3005,21 @@ function updateModelOptions() {
     AI_MODELS[provider].forEach(model => {
       modelSelect.innerHTML += `<option value="${model}">${model}</option>`;
     });
+  }
+  
+  // Auto-save when provider changes (if API key exists)
+  const apiKey = document.getElementById('aiApiKey')?.value;
+  if (provider && apiKey) {
+    saveAISettings();
+  }
+}
+
+function autoSaveAISettings() {
+  const provider = document.getElementById('aiProvider')?.value;
+  const apiKey = document.getElementById('aiApiKey')?.value;
+  
+  if (provider && apiKey) {
+    saveAISettings();
   }
 }
 
