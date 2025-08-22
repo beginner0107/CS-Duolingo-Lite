@@ -26,7 +26,12 @@ export async function showTab(e, tabName) {
  newTab.style.display = 'block';
  newTab.style.opacity = '0';
  
- if (tabName === 'manage') {
+ if (tabName === 'study') {
+   // Reset study session to reflect any changes from other tabs
+   if (window.resetStudySession) {
+     window.resetStudySession();
+   }
+ } else if (tabName === 'manage') {
    await window.updateDeckList();
    await window.updateQuestionList();
    await window.updateSettingsPanel();
@@ -385,24 +390,27 @@ export async function openEditQuestion(id) {
         <select id="editType">
           <option value="OX" ${q.type==='OX'?'selected':''}>OX</option>
           <option value="SHORT" ${q.type==='SHORT'?'selected':''}>단답형</option>
-          <option value="KEYWORD" ${q.type==='KEYWORD'?'selected':''}>키워드형</option>
-          <option value="ESSAY" ${q.type==='ESSAY'?'selected':''}>서술형</option>
+          <option value="ESSAY" ${q.type==='ESSAY'||q.type==='KEYWORD'?'selected':''}>서술형</option>
         </select>
       </div>
       <div style="grid-column:1/-1">
         <label style="color:var(--muted);font-size:14px">문제</label>
         <textarea id="editPrompt">${q.prompt||''}</textarea>
       </div>
-      <div id="editAnswerWrap" style="display:${q.type==='OX'||q.type==='SHORT'?'block':'none'}">
+      <div id="editAnswerWrap" style="display:${q.type==='OX'?'block':'none'}">
         <label style="color:var(--muted);font-size:14px">정답</label>
-        <input type="text" id="editAnswer" value="${q.answer||''}" placeholder="true/false 또는 단답" />
+        <select id="editAnswer">
+          <option value="">선택하세요</option>
+          <option value="true" ${q.answer==='true'?'selected':''}>O (참)</option>
+          <option value="false" ${q.answer==='false'?'selected':''}>X (거짓)</option>
+        </select>
       </div>
       <div id="editSynWrap" style="display:${q.type==='SHORT'?'block':'none'}">
         <label style="color:var(--muted);font-size:14px">동의어 (쉼표)</label>
         <input type="text" id="editSynonyms" value="${(q.synonyms||[]).join(', ')}" />
         <div><input type="checkbox" id="editFuzzy" ${q.shortFuzzy!==false?'checked':''}/> 퍼지 허용</div>
       </div>
-      <div id="editKeyWrap" style="display:${q.type==='KEYWORD'||q.type==='ESSAY'?'block':'none'}">
+      <div id="editKeyWrap" style="display:${q.type==='ESSAY'||q.type==='KEYWORD'?'block':'none'}">
         <label style="color:var(--muted);font-size:14px">키워드 (쉼표, 항목 내 a|b 허용)</label>
         <input type="text" id="editKeywords" value="${(q.keywords||[]).join(', ')}" />
         <label style="color:var(--muted);font-size:14px;margin-top:8px">임계값 (예: 7/10 또는 숫자)</label>
@@ -419,9 +427,9 @@ export async function openEditQuestion(id) {
   const typeEl = document.getElementById('editType');
   typeEl.addEventListener('change', () => {
     const t = typeEl.value;
-    document.getElementById('editAnswerWrap').style.display = (t==='OX'||t==='SHORT') ? 'block' : 'none';
+    document.getElementById('editAnswerWrap').style.display = (t==='OX') ? 'block' : 'none';
     document.getElementById('editSynWrap').style.display = (t==='SHORT') ? 'block' : 'none';
-    document.getElementById('editKeyWrap').style.display = (t==='KEYWORD'||t==='ESSAY') ? 'block' : 'none';
+    document.getElementById('editKeyWrap').style.display = (t==='ESSAY') ? 'block' : 'none';
   });
 
   const overlay = document.getElementById('editOverlay');
@@ -482,16 +490,18 @@ export async function saveEditQuestion(id) {
   };
   console.log('Updates to save:', updates);
   if (!updates.prompt) { showToast('문제를 입력하세요', 'warning'); return; }
-  if (updates.type === 'OX' || updates.type === 'SHORT') {
+  if (updates.type === 'OX') {
     updates.answer = (document.getElementById('editAnswer').value || '').trim();
-    if (!updates.answer) { showToast('정답을 입력하세요', 'warning'); return; }
-  }
-  if (updates.type === 'SHORT') {
+    if (!updates.answer) { showToast('정답을 선택하세요', 'warning'); return; }
+  } else if (updates.type === 'SHORT') {
+    // SHORT type uses explanation as answer
+    if (!updates.explain) { showToast('해설을 입력하세요 (단답형의 정답)', 'warning'); return; }
+    updates.answer = updates.explain;
     const syn = (document.getElementById('editSynonyms').value || '').split(',').map(s=>s.trim()).filter(Boolean);
     updates.synonyms = syn;
     updates.shortFuzzy = !!document.getElementById('editFuzzy').checked;
   }
-  if (updates.type === 'KEYWORD' || updates.type === 'ESSAY') {
+  if (updates.type === 'ESSAY') {
     const keys = (document.getElementById('editKeywords').value || '').split(',').map(s=>s.trim()).filter(Boolean);
     if (!keys.length) { showToast('키워드를 입력하세요', 'warning'); return; }
     updates.keywords = keys;

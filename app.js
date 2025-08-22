@@ -1224,11 +1224,18 @@ async function finishSession() {
     
     if (last === yesterdayStr) {
       profile.streak++;
+    } else if (last === null || last === undefined) {
+      // First time studying
+      profile.streak = 1;
     } else {
+      // Streak broken
       profile.streak = 1;
     }
     profile.lastStudy = today;
     await setProfile(profile);
+    
+    // Update UI immediately
+    document.getElementById('streak').textContent = profile.streak;
   }
   
   const qArea = document.getElementById('qArea');
@@ -1275,27 +1282,33 @@ async function addQuestion() {
    explain: document.getElementById('newExplain').value.trim()
  };
  
-  if (type === 'OX' || type === 'SHORT') {
+  if (type === 'OX') {
     const answer = document.getElementById('newAnswer').value.trim();
     if (!answer) {
-      showToast('정답을 입력해주세요', 'warning');
+      showToast('정답을 선택해주세요', 'warning');
       return;
     }
     question.answer = answer;
+  } else if (type === 'SHORT') {
+    // SHORT type uses explanation as answer
+    const explain = document.getElementById('newExplain').value.trim();
+    if (!explain) {
+      showToast('해설을 입력하세요 (단답형의 정답)', 'warning');
+      return;
+    }
+    question.answer = explain;
     
     // Add synonyms for SHORT type
-    if (type === 'SHORT') {
-      const synonyms = document.getElementById('newSynonyms').value
-        .split(',')
-        .map(s => s.trim())
-        .filter(s => s);
-      if (synonyms.length > 0) {
-        question.synonyms = synonyms;
-      }
-      const fuzzyToggle = document.getElementById('shortFuzzyToggle');
-      question.shortFuzzy = !!(fuzzyToggle ? fuzzyToggle.checked : true);
+    const synonyms = document.getElementById('newSynonyms').value
+      .split(',')
+      .map(s => s.trim())
+      .filter(s => s);
+    if (synonyms.length > 0) {
+      question.synonyms = synonyms;
     }
-  } else if (type === 'KEYWORD' || type === 'ESSAY') {
+    const fuzzyToggle = document.getElementById('shortFuzzyToggle');
+    question.shortFuzzy = !!(fuzzyToggle ? fuzzyToggle.checked : true);
+  } else if (type === 'ESSAY') {
     const keywords = document.getElementById('newKeywords').value
       .split(',')
       .map(k => k.trim())
@@ -1342,14 +1355,15 @@ function updateAnswerField() {
    answerField.style.display = 'block';
    synonymField.style.display = 'none';
    keywordField.style.display = 'none';
-   document.getElementById('newAnswer').placeholder = 'true 또는 false';
+   const answerSelect = document.getElementById('newAnswer');
+   answerSelect.innerHTML = '<option value="">선택하세요</option><option value="true">O (참)</option><option value="false">X (거짓)</option>';
+   answerSelect.value = '';
  } else if (type === 'SHORT') {
-   answerField.style.display = 'block';
+   answerField.style.display = 'none';
    synonymField.style.display = 'block';
    keywordField.style.display = 'none';
-   document.getElementById('newAnswer').placeholder = '정답을 입력하세요';
    if (fuzzyToggle) fuzzyToggle.checked = true;
- } else if (type === 'KEYWORD' || type === 'ESSAY') {
+ } else if (type === 'ESSAY') {
    answerField.style.display = 'none';
    synonymField.style.display = 'none';
    keywordField.style.display = 'block';
@@ -1358,6 +1372,21 @@ function updateAnswerField() {
      thrInputWrap.style.display = mode === 'custom' ? 'block' : 'none';
    }
  }
+}
+
+// Reset study session to reflect changes from other tabs
+function resetStudySession() {
+  session.started = false;
+  session.queue = [];
+  session.index = 0;
+  session.score = 0;
+  session.ok = 0;
+  session.ng = 0;
+  
+  const qArea = document.getElementById('qArea');
+  if (qArea) {
+    qArea.innerHTML = '<div class="placeholder">덱을 선택하고 학습을 시작하세요</div>';
+  }
 }
 
 // ========== 덱 관리 ==========
@@ -1607,8 +1636,7 @@ async function openEditQuestion(id) {
         <select id="editType">
           <option value="OX" ${q.type==='OX'?'selected':''}>OX</option>
           <option value="SHORT" ${q.type==='SHORT'?'selected':''}>단답형</option>
-          <option value="KEYWORD" ${q.type==='KEYWORD'?'selected':''}>키워드형</option>
-          <option value="ESSAY" ${q.type==='ESSAY'?'selected':''}>서술형</option>
+          <option value="ESSAY" ${q.type==='ESSAY'||q.type==='KEYWORD'?'selected':''}>서술형</option>
         </select>
       </div>
       <div style="grid-column:1/-1">
@@ -1624,7 +1652,7 @@ async function openEditQuestion(id) {
         <input type="text" id="editSynonyms" value="${(q.synonyms||[]).join(', ')}">
         <div><input type="checkbox" id="editFuzzy" ${q.shortFuzzy!==false?'checked':''}> 퍼지 허용</div>
       </div>
-      <div id="editKeyWrap" style="display:${q.type==='KEYWORD'||q.type==='ESSAY'?'block':'none'}">
+      <div id="editKeyWrap" style="display:${q.type==='ESSAY'||q.type==='KEYWORD'?'block':'none'}">
         <label style="color:var(--muted);font-size:14px">키워드 (쉼표, 항목 내 a|b 허용)</label>
         <input type="text" id="editKeywords" value="${(q.keywords||[]).join(', ')}">
         <label style="color:var(--muted);font-size:14px;margin-top:8px">임계값 (예: 7/10 또는 숫자)</label>
@@ -1649,7 +1677,7 @@ async function openEditQuestion(id) {
           const t=typeEl.value;
           ans.style.display=(t==='OX'||t==='SHORT')?'block':'none';
           syn.style.display=(t==='SHORT')?'block':'none';
-          key.style.display=(t==='KEYWORD'||t==='ESSAY')?'block':'none';
+          key.style.display=(t==='ESSAY')?'block':'none';
         });
       })();
     </script>
@@ -2117,14 +2145,14 @@ function processDelimitedText(text) {
 function validateImportRow(row) {
   const errors = [];
   const t = (row.type || '').toUpperCase();
-  if (!['OX', 'SHORT', 'KEYWORD', 'ESSAY'].includes(t)) errors.push('유형 오류');
+  if (!['OX', 'SHORT', 'ESSAY'].includes(t)) errors.push('유형 오류');
   if (!row.deck) errors.push('덱 누락');
   if (!row.prompt) errors.push('문제 누락');
   if (t === 'OX') {
     if (!['true', 'false', 'TRUE', 'FALSE'].includes(String(row.answer))) errors.push('OX 정답 오류');
   } else if (t === 'SHORT') {
     if (!row.answer) errors.push('정답 누락');
-  } else if (t === 'KEYWORD' || t === 'ESSAY') {
+  } else if (t === 'ESSAY') {
     if (!row.keywords || row.keywords.length === 0) errors.push('키워드 누락');
   }
   return { ...row, type: t, error: errors.join(', ') };
@@ -2236,8 +2264,19 @@ function updateQuickAddFields() {
   const syn = document.getElementById('quickSynWrap');
   const key = document.getElementById('quickKeyWrap');
   if (!ans || !syn || !key) return;
-  if (type === 'OX') { ans.style.display = 'block'; syn.style.display = 'none'; key.style.display = 'none'; }
-  else if (type === 'SHORT') { ans.style.display = 'block'; syn.style.display = 'block'; key.style.display = 'none'; }
+  if (type === 'OX') { 
+    ans.style.display = 'block'; 
+    syn.style.display = 'none'; 
+    key.style.display = 'none';
+    // Convert to dropdown for OX type
+    const answerEl = document.getElementById('quickAnswer');
+    answerEl.innerHTML = '<option value="">선택하세요</option><option value="true">O (참)</option><option value="false">X (거짓)</option>';
+  }
+  else if (type === 'SHORT') { 
+    ans.style.display = 'none'; 
+    syn.style.display = 'block'; 
+    key.style.display = 'none';
+  }
   else { ans.style.display = 'none'; syn.style.display = 'none'; key.style.display = 'block'; }
 }
 
@@ -2248,16 +2287,17 @@ async function quickAdd() {
   if (!deck) { showToast('덱을 선택하세요', 'warning'); return; }
   if (!prompt) { showToast('문제를 입력하세요', 'warning'); return; }
   const q = { deck, type, prompt };
-  if (type === 'OX' || type === 'SHORT') {
+  if (type === 'OX') {
     const ans = (document.getElementById('quickAnswer')?.value || '').trim();
-    if (!ans) { showToast('정답을 입력하세요', 'warning'); return; }
+    if (!ans) { showToast('정답을 선택하세요', 'warning'); return; }
     q.answer = ans;
-    if (type === 'SHORT') {
-      const syn = (document.getElementById('quickSynonyms')?.value || '').split(',').map(s => s.trim()).filter(Boolean);
-      if (syn.length) q.synonyms = syn;
-      q.shortFuzzy = !!document.getElementById('quickFuzzy')?.checked;
-    }
-  } else if (type === 'KEYWORD' || type === 'ESSAY') {
+  } else if (type === 'SHORT') {
+    // SHORT type doesn't use quickAnswer - it uses explanation as answer
+    q.answer = prompt; // For quick add, use prompt as answer for SHORT type
+    const syn = (document.getElementById('quickSynonyms')?.value || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (syn.length) q.synonyms = syn;
+    q.shortFuzzy = !!document.getElementById('quickFuzzy')?.checked;
+  } else if (type === 'ESSAY') {
     const kw = (document.getElementById('quickKeywords')?.value || '').split(',').map(s => s.trim()).filter(Boolean);
     if (!kw.length) { showToast('키워드를 입력하세요', 'warning'); return; }
     q.keywords = kw;
@@ -2671,7 +2711,7 @@ document.addEventListener('DOMContentLoaded', async function() {
   try { if (typeof setupGuidedImport === 'function') setupGuidedImport(); } catch (_) {}
    
   // AI-related global assignments and event listeners
-  Object.assign(window, { saveAISettings, testAIConnection });
+  Object.assign(window, { saveAISettings, testAIConnection, resetStudySession });
   document.getElementById('aiProvider')?.addEventListener('change', updateModelOptions);
   document.getElementById('aiModel')?.addEventListener('change', autoSaveAISettings);
   
