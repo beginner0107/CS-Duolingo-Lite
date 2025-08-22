@@ -840,7 +840,7 @@ async function showQuestion() {
         <textarea id="userAnswer" placeholder="답을 입력하세요..." autofocus></textarea>
         <div style="margin-top:16px">
           <button onclick="submitAnswer(document.getElementById('userAnswer').value)">제출</button>
-          <button class="secondary" onclick="submitAnswer('')">모르겠음</button>
+          <button class="secondary" onclick="showDontKnowAnswer()">모르겠음</button>
         </div>
     `;
   }
@@ -890,29 +890,10 @@ async function submitAnswer(userAnswer) {
   const feedback = await gradeQuestionAsync(q, userAnswer);
   const correct = feedback.correct === true;
   
-  // Optional AI grading for enhanced feedback (only for Auto/Cloud modes)
-  let aiResult = null;
-  try {
-    const aiMode = localStorage.getItem('aiMode') || 'local';
-    
-    // Skip AI processing entirely for local mode
-    if (aiMode !== 'local') {
-      const input = {
-        prompt: userAnswer,
-        reference: { answer: q.answer, keywords: q.keywords }
-      };
-      
-      if (aiMode === 'auto') {
-        const { decideGrade } = await import('./ai/router.js');
-        aiResult = await decideGrade(input);
-      } else if (aiMode === 'cloud') {
-        const { getAdapter } = await import('./ai/index.js');
-        aiResult = await getAdapter('cloud').grade(input);
-      }
-      
-      window._lastAiResult = aiResult;
-    }
-  } catch (e) { /* AI grading optional */ }
+  // Store AI result if available (from gradeQuestionAsync)
+  if (feedback.aiGraded) {
+    window._lastAiResult = { used: 'cloud', rationale: feedback.notes };
+  }
   
   // 점수 & XP (temporary for initial feedback)
   const gain = correct ? 10 : 2;
@@ -1195,6 +1176,22 @@ async function showResult(question, userAnswer, feedback) {
     html += `<div style="margin-top:8px;color:var(--muted)">${question.explain}</div>`;
   }
   
+  // Add chatbot feature for ESSAY questions when AI is connected (correct or incorrect)
+  if (question.type === 'ESSAY' && feedback.aiGraded) {
+    html += `
+      <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+        <div style="margin-bottom:8px;font-weight:bold;color:var(--text)">💬 AI와 추가 질문하기</div>
+        <div id="chatHistory" style="max-height:200px;overflow-y:auto;margin-bottom:8px;font-size:14px"></div>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="chatInput" placeholder="이 문제에 대해 더 궁금한 점을 물어보세요..." 
+                 style="flex:1;padding:8px;border:1px solid var(--border);border-radius:4px;font-size:14px"
+                 onkeydown="if(event.key==='Enter') askChatQuestion()">
+          <button onclick="askChatQuestion()" style="padding:8px 12px;background:var(--primary);color:white;border:none;border-radius:4px;cursor:pointer">질문</button>
+        </div>
+      </div>
+    `;
+  }
+  
   // Add grade buttons
   html += `
     <div class="grade-buttons">
@@ -1387,6 +1384,100 @@ function resetStudySession() {
   if (qArea) {
     qArea.innerHTML = '<div class="placeholder">덱을 선택하고 학습을 시작하세요</div>';
   }
+}
+
+// Chatbot functionality for essay questions
+async function askChatQuestion() {
+  const input = document.getElementById('chatInput');
+  const history = document.getElementById('chatHistory');
+  if (!input || !history) return;
+  
+  const question = input.value.trim();
+  if (!question) return;
+  
+  // Clear input and show user question
+  input.value = '';
+  history.innerHTML += `<div style="margin-bottom:8px;text-align:right"><strong>You:</strong> ${question}</div>`;
+  
+  // Show loading
+  history.innerHTML += `<div id="aiThinking" style="margin-bottom:8px;color:var(--muted);font-style:italic">AI 답변 중...</div>`;
+  history.scrollTop = history.scrollHeight;
+  
+  try {
+    const { getAdapter } = await import('./ai/index.js');
+    const adapter = getAdapter('cloud');
+    
+    const currentQuestion = session.queue[session.index];
+    const context = `문제: ${currentQuestion.prompt}\n설명: ${currentQuestion.explain || ''}`;
+    
+    // Use the new chat method instead of grade
+    const response = await adapter.chat(question, context);
+    
+    // Remove loading and add AI response with markdown formatting
+    document.getElementById('aiThinking').remove();
+    const formattedResponse = formatMarkdown(response);
+    history.innerHTML += `<div style="margin-bottom:8px"><strong>AI:</strong> ${formattedResponse}</div>`;
+    history.scrollTop = history.scrollHeight;
+    
+  } catch (error) {
+    console.error('Chat question failed:', error);
+    document.getElementById('aiThinking').remove();
+    history.innerHTML += `<div style="margin-bottom:8px;color:var(--error)"><strong>Error:</strong> AI 응답을 가져올 수 없습니다.</div>`;
+    history.scrollTop = history.scrollHeight;
+  }
+}
+
+// Simple markdown formatting for chat responses
+function formatMarkdown(text) {
+  if (!text) return '';
+  
+  return text
+    // Bold: **text** -> <strong>text</strong>
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    // Italic: *text* -> <em>text</em>
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    // Code: `text` -> <code>text</code>
+    .replace(/`(.*?)`/g, '<code style="background:var(--bg-secondary);padding:2px 4px;border-radius:3px;font-family:monospace">$1</code>')
+    // Line breaks
+    .replace(/\n/g, '<br>');
+}
+
+// Handle "I don't know" button - show correct answer and mark as incorrect
+async function showDontKnowAnswer() {
+  const q = session.queue[session.index];
+  
+  // Mark as incorrect and prepare for "Again" grading
+  session.currentQuestion = q;
+  session.currentAnswer = '';
+  session.currentCorrect = false;
+  
+  // Show the correct answer immediately
+  await showResult(q, '', { correct: false, score: 0, hits: [], misses: [q.answer] });
+  
+  // Add "Next Question" button instead of grade buttons
+  const resultArea = document.getElementById('resultArea');
+  if (resultArea) {
+    // Remove existing grade buttons
+    const gradeButtons = resultArea.querySelector('.grade-buttons');
+    if (gradeButtons) {
+      gradeButtons.remove();
+    }
+    
+    // Add next question button
+    const nextButton = document.createElement('div');
+    nextButton.innerHTML = `
+      <div style="text-align:center;margin-top:16px">
+        <button onclick="proceedAfterDontKnow()" style="padding:12px 24px;background:var(--primary);color:white;border:none;border-radius:4px;cursor:pointer;font-weight:bold">다음 문제</button>
+      </div>
+    `;
+    resultArea.appendChild(nextButton);
+  }
+}
+
+// Proceed to next question after "I don't know" - automatically grade as "Again"
+async function proceedAfterDontKnow() {
+  // Automatically grade as "Again" (0)
+  await gradeAnswer(0);
 }
 
 // ========== 덱 관리 ==========
@@ -2711,7 +2802,7 @@ document.addEventListener('DOMContentLoaded', async function() {
   try { if (typeof setupGuidedImport === 'function') setupGuidedImport(); } catch (_) {}
    
   // AI-related global assignments and event listeners
-  Object.assign(window, { saveAISettings, testAIConnection, resetStudySession });
+  Object.assign(window, { saveAISettings, testAIConnection, resetStudySession, askChatQuestion, showDontKnowAnswer, proceedAfterDontKnow });
   document.getElementById('aiProvider')?.addEventListener('change', updateModelOptions);
   document.getElementById('aiModel')?.addEventListener('change', autoSaveAISettings);
   
@@ -3047,14 +3138,19 @@ function updateModelOptions() {
     });
   }
   
-  // Auto-save when provider changes (if API key exists)
-  const apiKey = document.getElementById('aiApiKey')?.value;
-  if (provider && apiKey) {
-    saveAISettings();
+  // Auto-save when provider changes (if API key exists and not loading)
+  if (!window._isLoadingAISettings) {
+    const apiKey = document.getElementById('aiApiKey')?.value;
+    if (provider && apiKey) {
+      saveAISettings();
+    }
   }
 }
 
 function autoSaveAISettings() {
+  // Don't auto-save during initial loading
+  if (window._isLoadingAISettings) return;
+  
   const provider = document.getElementById('aiProvider')?.value;
   const apiKey = document.getElementById('aiApiKey')?.value;
   
@@ -3123,9 +3219,16 @@ function loadAISettings() {
       if (providerEl) providerEl.value = config.provider || '';
       if (apiKeyEl) apiKeyEl.value = config.apiKey || '';
       
+      // Update model options first, then set the saved model value
       updateModelOptions();
       
-      if (modelEl) modelEl.value = config.model || '';
+      // Set model value after dropdown is populated, but prevent auto-save during load
+      if (modelEl && config.model) {
+        // Temporarily disable auto-save during initial load
+        window._isLoadingAISettings = true;
+        modelEl.value = config.model;
+        window._isLoadingAISettings = false;
+      }
     }
   } catch (e) {
     console.warn('Failed to load AI settings:', e);

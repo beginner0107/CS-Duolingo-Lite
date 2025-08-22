@@ -331,34 +331,50 @@ export function gradeQuestion(q, userAnswer) {
 // Async version that uses local AI modules for advanced grading
 export async function gradeQuestionAsync(q, userAnswer) {
   if (q?.type === 'ESSAY') {
-    try {
-      // Use local AI modules instead of external server
-      const { decideGrade } = await import('../../ai/router.js');
-      
-      const input = {
-        prompt: userAnswer,
-        reference: {
-          answer: q.answer || q.reference || '',
-          keywords: q.keywords || []
-        }
-      };
-      
-      const result = await decideGrade(input);
-      return { 
-        correct: result.correct, 
-        score: result.score, 
-        hits: [], 
-        misses: [], 
-        notes: result.rationale || 'AI graded response' 
-      };
-    } catch (e) {
-      console.warn('AI grading failed, falling back to local scoring:', e);
-      // Fallback: treat as KEYWORD if keywords exist
-      if (Array.isArray(q.keywords) && q.keywords.length) {
-        return gradeQuestion({ ...q, type: 'KEYWORD' }, userAnswer);
+    // Check if AI is available and connected
+    const aiMode = localStorage.getItem('aiMode') || 'local';
+    const hasAiConfig = window.__AI_CONF && window.__AI_CONF.apiKey;
+    
+    if ((aiMode === 'auto' || aiMode === 'cloud') && hasAiConfig) {
+      try {
+        // Use AI grading for ESSAY when AI is connected
+        const { getAdapter } = await import('../../ai/index.js');
+        const adapter = getAdapter('cloud');
+        
+        const input = {
+          prompt: userAnswer,
+          reference: {
+            answer: q.explain || q.answer || '', // Use explanation as the main reference
+            question: q.prompt || ''
+          }
+        };
+        
+        const result = await adapter.grade(input);
+        return { 
+          correct: result.correct, 
+          score: result.score, 
+          hits: [], 
+          misses: [], 
+          notes: result.rationale || 'AI grading completed',
+          aiGraded: true
+        };
+      } catch (e) {
+        console.warn('AI grading failed, falling back to keyword scoring:', e);
+        // Fallback to keyword grading when AI fails
       }
-      return { correct: false, score: 0, hits: [], misses: [], notes: 'Essay grading unavailable' };
     }
+    
+    // Use keyword grading when AI is not connected or failed
+    if (Array.isArray(q.keywords) && q.keywords.length) {
+      const keywordResult = gradeQuestion({ ...q, type: 'ESSAY' }, userAnswer);
+      return {
+        ...keywordResult,
+        notes: keywordResult.notes || 'Keyword-based grading (AI not connected)',
+        aiGraded: false
+      };
+    }
+    
+    return { correct: false, score: 0, hits: [], misses: [], notes: 'No keywords defined for essay grading', aiGraded: false };
   }
   // Default: reuse sync grading and wrap in Promise
   return Promise.resolve(gradeQuestion(q, userAnswer));

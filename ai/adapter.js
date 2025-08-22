@@ -34,14 +34,34 @@ export class CloudAdapter {
       throw new Error('AI configuration not found. Set window.__AI_CONF with baseUrl, apiKey, provider, model');
     }
     
-    const systemPrompt = "You are a bilingual (KR/EN) grader. Return strict JSON only, no prose. Score ∈ [0,1]. correct=true if score≥0.75. Consider synonyms and meaning. Respond rationale in Korean.";
+    const systemPrompt = "You are a bilingual (KR/EN) grader for essay questions. Return strict JSON only, no prose. Score ∈ [0,1]. correct=true if score≥0.75. Evaluate the overall content quality, accuracy, and completeness rather than just keyword matching. Respond rationale in Korean.";
     
-    const userPrompt = `Question: ${input.prompt}
+    const isEssayQuestion = input.reference?.question;
+    
+    let userPrompt;
+    if (isEssayQuestion) {
+      // For essay questions, focus on content evaluation
+      userPrompt = `Original Question: ${input.reference.question}
+Expected Answer/Explanation: ${input.reference?.answer || 'N/A'}
+Student's Answer: ${input.prompt}
+
+Please evaluate the student's answer based on:
+1. Accuracy of content
+2. Completeness of explanation  
+3. Understanding demonstrated
+4. Overall quality
+
+Output format (MUST):
+{"score":0.0,"correct":false,"rationale":"한국어로 상세한 평가"}`;
+    } else {
+      // Fallback for other question types
+      userPrompt = `Question: ${input.prompt}
 Reference: ${input.reference?.answer || 'N/A'}
 Keywords (optional): ${JSON.stringify(input.reference?.keywords || [])}
 
 Output format (MUST):
 {"score":0.0,"correct":false,"rationale":"한국어로 간단한 설명"}`;
+    }
 
     const requestBody = this._buildRequestBody(config, systemPrompt, userPrompt);
     
@@ -118,12 +138,30 @@ Output format (MUST):
   
   _safeParseJSON(text) {
     try {
-      return JSON.parse(text);
-    } catch (_) {
-      const match = text && text.match(/\{[\s\S]*\}/);
-      if (match) {
-        try { return JSON.parse(match[0]); } catch (_) {}
+      const parsed = JSON.parse(text);
+      // Handle array responses - take first element if it's an array
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed[0];
       }
+      return parsed;
+    } catch (_) {
+      // Try to extract array first (for Gemini array responses)
+      const arrayMatch = text && text.match(/\[[\s\S]*\]/);
+      if (arrayMatch) {
+        try {
+          const parsed = JSON.parse(arrayMatch[0]);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return parsed[0];
+          }
+        } catch (_) {}
+      }
+      
+      // Fallback to object extraction
+      const objMatch = text && text.match(/\{[\s\S]*\}/);
+      if (objMatch) {
+        try { return JSON.parse(objMatch[0]); } catch (_) {}
+      }
+      
       throw new Error('Model did not return strict JSON');
     }
   }
@@ -190,6 +228,94 @@ Output format (MUST):
         return data.usageMetadata?.totalTokenCount;
       default:
         return undefined;
+    }
+  }
+
+  /**
+   * Chat method for conversational responses
+   * @param {string} question - The user's question
+   * @param {string} context - The learning context
+   * @returns {Promise<string>} - The AI response
+   */
+  async chat(question, context) {
+    const config = window.__AI_CONF;
+    if (!config || !config.baseUrl || !config.apiKey) {
+      throw new Error('AI configuration not found');
+    }
+
+    const systemPrompt = "친근한 튜터로서 한국어로 간결하게 답변하세요. 핵심만 설명해주세요.";
+    
+    const userPrompt = `주제: ${context}\n질문: ${question}\n\n간단명료하게 답변:`;
+
+    const requestBody = this._buildChatRequestBody(config, systemPrompt, userPrompt);
+    
+    try {
+      let url = config.baseUrl;
+      let headers = { 'Content-Type': 'application/json' };
+      
+      if (config.provider === 'gemini') {
+        url += `?key=${config.apiKey}`;
+      } else {
+        headers['Authorization'] = `Bearer ${config.apiKey}`;
+        if (config.provider === 'anthropic') {
+          headers['anthropic-version'] = '2023-06-01';
+        }
+      }
+      
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(requestBody)
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      return this._extractContent(data, config.provider);
+      
+    } catch (error) {
+      throw new Error(`Chat failed: ${error.message}`);
+    }
+  }
+
+  _buildChatRequestBody(config, systemPrompt, userPrompt) {
+    const base = {
+      max_tokens: 150,
+      temperature: 0.3
+    };
+    
+    switch (config.provider) {
+      case 'openai':
+        return {
+          model: config.model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          ...base
+        };
+      case 'anthropic':
+        return {
+          model: config.model,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userPrompt }],
+          ...base
+        };
+      case 'gemini':
+        return {
+          contents: [{
+            parts: [{ text: `${systemPrompt}\n\n${userPrompt}` }]
+          }],
+          generationConfig: {
+            maxOutputTokens: base.max_tokens,
+            temperature: base.temperature
+            // Note: no responseMimeType for plain text
+          }
+        };
+      default:
+        throw new Error(`Unsupported provider: ${config.provider}`);
     }
   }
 }
