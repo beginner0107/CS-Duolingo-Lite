@@ -18,8 +18,23 @@
  */
 
 /**
+ * @typedef {Object} GenerationInput
+ * @property {string} prompt - The prompt for generating questions
+ * @property {string} questionType - Type of questions to generate (OX, SHORT, KEYWORD)
+ * @property {number} count - Number of questions to generate
+ */
+
+/**
+ * @typedef {Object} GenerationOutput
+ * @property {Object[]} questions - Generated questions array
+ * @property {'cloud'|'local'} used - Which adapter was actually used
+ * @property {number} [tokens] - Number of tokens used (if applicable)
+ */
+
+/**
  * @typedef {Object} AIAdapter
  * @property {function(GradingInput): Promise<GradingOutput>} grade - Grade an answer
+ * @property {function(GenerationInput): Promise<GenerationOutput>} generateQuestions - Generate questions
  */
 
 export class CloudAdapter {
@@ -137,6 +152,11 @@ Output format (MUST):
   }
   
   _safeParseJSON(text) {
+    if (!text || typeof text !== 'string') {
+      throw new Error('Invalid input: expected non-empty string');
+    }
+
+    // First try direct JSON parsing
     try {
       const parsed = JSON.parse(text);
       // Handle array responses - take first element if it's an array
@@ -145,31 +165,59 @@ Output format (MUST):
       }
       return parsed;
     } catch (_) {
-      // Try to extract array first (for Gemini array responses)
-      const arrayMatch = text && text.match(/\[[\s\S]*\]/);
-      if (arrayMatch) {
-        try {
-          const parsed = JSON.parse(arrayMatch[0]);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            return parsed[0];
-          }
-        } catch (_) {}
-      }
-      
-      // Fallback to object extraction
-      const objMatch = text && text.match(/\{[\s\S]*\}/);
-      if (objMatch) {
-        try { return JSON.parse(objMatch[0]); } catch (_) {}
-      }
-      
-      throw new Error('Model did not return strict JSON');
+      // Continue to fallback methods
     }
+
+    // Try to clean common markdown formatting
+    let cleanText = text.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+    try {
+      const parsed = JSON.parse(cleanText);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed[0];
+      }
+      return parsed;
+    } catch (_) {
+      // Continue to pattern matching
+    }
+
+    // Try to extract JSON object with better pattern matching
+    const patterns = [
+      // Match complete JSON object with proper nesting
+      /\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\})*)*\})*)*\}/g,
+      // Match JSON array
+      /\[(?:[^\[\]]|(?:\[(?:[^\[\]]|(?:\[[^\[\]]*\])*)*\])*)*\]/g
+    ];
+
+    for (const pattern of patterns) {
+      const matches = text.match(pattern);
+      if (matches) {
+        for (const match of matches) {
+          try {
+            const parsed = JSON.parse(match);
+            // Prioritize objects with 'questions' property
+            if (parsed && typeof parsed === 'object' && parsed.questions) {
+              return parsed;
+            }
+            // Fallback to first valid JSON
+            if (parsed && typeof parsed === 'object') {
+              return parsed;
+            }
+          } catch (_) {
+            continue;
+          }
+        }
+      }
+    }
+
+    throw new Error(`No valid JSON found in text: "${text.substring(0, 100)}..."`);
   }
 
   _buildRequestBody(config, systemPrompt, userPrompt) {
+    // Check if this is a question generation request (longer responses needed)
+    const isGeneration = systemPrompt.includes('question generator');
     const base = {
-      max_tokens: 200,
-      temperature: 0.2
+      max_tokens: isGeneration ? 2000 : 200,
+      temperature: isGeneration ? 0.7 : 0.2
     };
     
     switch (config.provider) {
@@ -318,6 +366,128 @@ Output format (MUST):
         throw new Error(`Unsupported provider: ${config.provider}`);
     }
   }
+
+  /**
+   * @param {GenerationInput} input
+   * @returns {Promise<GenerationOutput>}
+   */
+  async generateQuestions(input) {
+    const config = window.__AI_CONF;
+    if (!config || !config.baseUrl || !config.apiKey) {
+      throw new Error('AI configuration not found. Set window.__AI_CONF with baseUrl, apiKey, provider, model');
+    }
+    
+    const systemPrompt = "You are a computer science question generator. Generate high-quality questions for studying. Always respond with valid JSON in the exact format requested. Use Korean language for all questions and explanations.";
+    const userPrompt = input.prompt;
+
+    const requestBody = this._buildRequestBody(config, systemPrompt, userPrompt);
+    
+    // Single attempt for generation - no retries to avoid costs
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout for generation
+      
+      // Handle different authentication methods per provider
+      let url = config.baseUrl;
+      let headers = { 'Content-Type': 'application/json' };
+      
+      if (config.provider === 'gemini') {
+        // Gemini uses API key as query parameter
+        url += `?key=${config.apiKey}`;
+      } else {
+        // OpenAI and Anthropic use Authorization header
+        headers['Authorization'] = `Bearer ${config.apiKey}`;
+        if (config.provider === 'anthropic') {
+          headers['anthropic-version'] = '2023-06-01';
+        }
+      }
+      
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(requestBody),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      const content = this._extractContent(data, config.provider);
+      
+      console.log('AI raw response content:', content?.substring(0, 500) + '...');
+      
+      // Enhanced JSON parsing with better error messages
+      let result;
+      try {
+        result = this._safeParseJSON(content);
+      } catch (parseError) {
+        console.log('Raw AI response:', content);
+        throw new Error(`JSON parsing failed: ${parseError.message}. Raw response: ${content?.substring(0, 200)}...`);
+      }
+      
+      if (!result) {
+        throw new Error(`No valid JSON found in response: ${content?.substring(0, 200)}...`);
+      }
+      
+      if (!result.questions) {
+        throw new Error(`Missing 'questions' property in response: ${JSON.stringify(result)}`);
+      }
+      
+      if (!Array.isArray(result.questions)) {
+        throw new Error(`'questions' must be an array, got: ${typeof result.questions}`);
+      }
+
+      if (result.questions.length === 0) {
+        throw new Error('AI returned empty questions array');
+      }
+
+      // Validate and normalize question structure
+      const normalizedQuestions = result.questions.map((q, i) => {
+        // Check for required fields with more flexible naming
+        const prompt = q.prompt || q.question || q.text;
+        const answer = q.answer !== undefined ? q.answer : q.correct;
+        const explanation = q.explanation || q.rationale || q.reason || q.detail || q.describe;
+        
+        if (!prompt || answer === undefined || !explanation) {
+          console.warn(`Question ${i} missing required fields:`, q);
+          console.warn(`Extracted fields: prompt=${!!prompt}, answer=${answer !== undefined}, explanation=${!!explanation}`);
+          throw new Error(`Question ${i} is missing required fields. Expected: prompt, answer, explanation. Got: ${Object.keys(q).join(', ')}`);
+        }
+        
+        // Normalize the question object
+        const normalized = {
+          prompt: String(prompt).trim(),
+          answer: answer,
+          explanation: String(explanation).trim()
+        };
+        
+        // Include keywords if present (for KEYWORD type questions)
+        if (q.keywords && Array.isArray(q.keywords)) {
+          normalized.keywords = q.keywords;
+        }
+        
+        return normalized;
+      });
+      
+      console.log(`Successfully normalized ${normalizedQuestions.length} questions`);
+      
+      return {
+        questions: normalizedQuestions,
+        used: 'cloud',
+        tokens: this._extractTokens(data, config.provider)
+      };
+      
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        throw new Error('Request timeout after 30 seconds');
+      }
+      throw new Error(`Generation failed: ${error.message}`);
+    }
+  }
 }
 
 export class LocalAdapter {
@@ -357,5 +527,14 @@ export class LocalAdapter {
       used: 'local',
       tokens: undefined
     };
+  }
+
+  /**
+   * @param {GenerationInput} input
+   * @returns {Promise<GenerationOutput>}
+   */
+  async generateQuestions(_input) {
+    // LocalAdapter doesn't support question generation - it's a cloud-only feature
+    throw new Error('Question generation is only available with cloud AI services');
   }
 }

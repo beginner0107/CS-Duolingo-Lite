@@ -321,6 +321,58 @@
       </div>
 
       <div class="card">
+        <h2>🤖 AI 문제 생성</h2>
+        <div class="grid grid-3">
+          <div>
+            <label style="color:var(--muted);font-size:14px">주제</label>
+            <input type="text" id="aiTopic" placeholder="예: 운영체제, 네트워크, 알고리즘">
+          </div>
+          <div>
+            <label style="color:var(--muted);font-size:14px">난이도</label>
+            <select id="aiDifficulty">
+              <option value="beginner">초급</option>
+              <option value="intermediate">중급</option>
+              <option value="advanced">고급</option>
+            </select>
+          </div>
+          <div>
+            <label style="color:var(--muted);font-size:14px">문제 유형</label>
+            <select id="aiQuestionType">
+              <option value="OX">OX 문제</option>
+              <option value="SHORT">단답형</option>
+              <option value="KEYWORD">키워드형</option>
+            </select>
+          </div>
+          <div>
+            <label style="color:var(--muted);font-size:14px">덱 선택</label>
+            <select id="aiDeckSelect"></select>
+          </div>
+          <div>
+            <label style="color:var(--muted);font-size:14px">문제 수</label>
+            <select id="aiQuestionCount">
+              <option value="3">3개</option>
+              <option value="5">5개</option>
+              <option value="10">10개</option>
+              <option value="15">15개</option>
+            </select>
+          </div>
+          <div style="align-self:end">
+            <button id="generateBtn" class="success" onclick="generateQuestions()">
+              <span id="generateBtnText">🚀 문제 생성</span>
+            </button>
+          </div>
+        </div>
+        <div id="generatedPreview" style="display:none;margin-top:16px">
+          <h3 style="font-size:16px;color:var(--muted);margin-bottom:8px">생성된 문제 미리보기</h3>
+          <div id="previewList" class="question-list" style="max-height:300px;overflow-y:auto"></div>
+          <div style="margin-top:12px">
+            <button class="success" onclick="saveGeneratedQuestions()">선택된 문제 저장</button>
+            <button class="secondary" onclick="cancelGeneration()" style="margin-left:8px">취소</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
         <h2>⚡ 빠른 추가 (덱별)</h2>
         <div class="grid grid-3">
           <div>
