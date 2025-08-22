@@ -93,7 +93,10 @@
       </div>
 
       <div class="card">
-        <h2>💡 문제</h2>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <h2 style="margin:0">💡 문제</h2>
+          <button id="stopBtn" onclick="stopLearning()" style="display:none;padding:8px 16px;background:var(--danger);color:white;border:none;border-radius:6px;cursor:pointer;font-size:14px;font-weight:500">학습 중단</button>
+        </div>
         <div id="qArea">
           <div style="text-align:center;padding:40px;color:var(--muted)">
             덱을 선택하고 학습을 시작하세요! 

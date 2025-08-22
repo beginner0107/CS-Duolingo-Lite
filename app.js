@@ -797,6 +797,10 @@ async function startSession() {
     total: queue.length
   };
   
+  // Show stop button when session starts
+  const stopBtn = document.getElementById('stopBtn');
+  if (stopBtn) stopBtn.style.display = 'inline-block';
+  
   await updateProgress();
   await showQuestion();
 }
@@ -1209,6 +1213,10 @@ async function showResult(question, userAnswer, feedback) {
 async function finishSession() {
   session.active = false;
   
+  // Hide stop button when session finishes
+  const stopBtn = document.getElementById('stopBtn');
+  if (stopBtn) stopBtn.style.display = 'none';
+  
   // 스트릭 업데이트
   const profile = await getProfile();
   const today = todayStr();
@@ -1478,6 +1486,41 @@ async function showDontKnowAnswer() {
 async function proceedAfterDontKnow() {
   // Automatically grade as "Again" (0)
   await gradeAnswer(0);
+}
+
+// Stop learning session
+async function stopLearning() {
+  if (!session.active || !confirm('학습을 중단하시겠습니까?')) {
+    return;
+  }
+  
+  session.active = false;
+  
+  // Hide stop button
+  const stopBtn = document.getElementById('stopBtn');
+  if (stopBtn) stopBtn.style.display = 'none';
+  
+  // Show completion message
+  const qArea = document.getElementById('qArea');
+  qArea.innerHTML = `
+    <div style="text-align:center;padding:40px">
+      <h3>📚 학습을 중단했습니다</h3>
+      <p>완료한 문제: ${session.index}개 / 전체: ${session.total}개</p>
+      <p>정답률: ${session.ok}/${session.ok + session.ng} (${Math.round(session.ok / Math.max(1, session.ok + session.ng) * 100)}%)</p>
+      <button onclick="startSession()" style="margin-top:16px;padding:12px 24px;background:var(--primary);color:white;border:none;border-radius:8px;cursor:pointer">
+        다시 학습하기
+      </button>
+    </div>
+  `;
+  
+  // Reset session data
+  session.queue = [];
+  session.index = 0;
+  session.ok = 0;
+  session.ng = 0;
+  session.total = 0;
+  
+  await updateProgress();
 }
 
 // ========== 덱 관리 ==========
@@ -2802,7 +2845,7 @@ document.addEventListener('DOMContentLoaded', async function() {
   try { if (typeof setupGuidedImport === 'function') setupGuidedImport(); } catch (_) {}
    
   // AI-related global assignments and event listeners
-  Object.assign(window, { saveAISettings, testAIConnection, resetStudySession, askChatQuestion, showDontKnowAnswer, proceedAfterDontKnow });
+  Object.assign(window, { saveAISettings, testAIConnection, resetStudySession, askChatQuestion, showDontKnowAnswer, proceedAfterDontKnow, stopLearning });
   document.getElementById('aiProvider')?.addEventListener('change', updateModelOptions);
   document.getElementById('aiModel')?.addEventListener('change', autoSaveAISettings);
   
