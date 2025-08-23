@@ -278,9 +278,15 @@ function getSettings() {
     const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
     return {
       dailyReviewLimit: Number.isFinite(s.dailyReviewLimit) ? s.dailyReviewLimit : DEFAULT_DAILY_REVIEW_LIMIT,
+      fontSize: s.fontSize || 'medium',
+      focusMode: Boolean(s.focusMode),
     };
   } catch (_) {
-    return { dailyReviewLimit: DEFAULT_DAILY_REVIEW_LIMIT };
+    return { 
+      dailyReviewLimit: DEFAULT_DAILY_REVIEW_LIMIT,
+      fontSize: 'medium',
+      focusMode: false
+    };
   }
 }
 
@@ -2534,12 +2540,28 @@ async function updateSettingsPanel() {
   const s = getSettings();
   input.value = s.dailyReviewLimit;
   
+  // Load font size setting
+  const fontSizeSelect = document.getElementById('fontSizeSelect');
+  if (fontSizeSelect) {
+    fontSizeSelect.value = s.fontSize;
+  }
+  
+  // Load focus mode setting
+  const focusModeToggle = document.getElementById('focusModeToggle');
+  if (focusModeToggle) {
+    focusModeToggle.checked = s.focusMode;
+  }
+  
   const aiMode = document.getElementById('aiMode');
   if (aiMode) {
     aiMode.value = localStorage.getItem('aiMode') || 'local';
   }
   
   loadAISettings();
+  
+  // Apply current settings to the UI
+  applyFontSize(s.fontSize);
+  applyFocusMode(s.focusMode);
 }
 
 async function saveSettings() {
@@ -2551,16 +2573,161 @@ async function saveSettings() {
     showToast('1~500 사이의 숫자를 입력하세요', 'warning');
     return;
   }
-  setSettings({ dailyReviewLimit: val });
+  
+  // Get font size and focus mode settings
+  const fontSizeSelect = document.getElementById('fontSizeSelect');
+  const focusModeToggle = document.getElementById('focusModeToggle');
+  
+  const newSettings = {
+    dailyReviewLimit: val,
+    fontSize: fontSizeSelect ? fontSizeSelect.value : 'medium',
+    focusMode: focusModeToggle ? focusModeToggle.checked : false
+  };
+  
+  setSettings(newSettings);
   
   const aiMode = document.getElementById('aiMode');
   if (aiMode) {
     localStorage.setItem('aiMode', aiMode.value);
   }
   
+  // Apply the new settings immediately
+  applyFontSize(newSettings.fontSize);
+  applyFocusMode(newSettings.focusMode);
+  
   updateDueLeftUI();
   await updateProgress();
   showToast('설정이 저장되었습니다', 'success');
+}
+
+// Font size application
+function applyFontSize(fontSize) {
+  const root = document.documentElement;
+  
+  switch (fontSize) {
+    case 'small':
+      root.style.setProperty('--font-size-base', '14px');
+      root.style.setProperty('--font-size-lg', '16px');
+      root.style.setProperty('--font-size-xl', '18px');
+      break;
+    case 'large':
+      root.style.setProperty('--font-size-base', '18px');
+      root.style.setProperty('--font-size-lg', '20px');
+      root.style.setProperty('--font-size-xl', '24px');
+      break;
+    case 'medium':
+    default:
+      root.style.setProperty('--font-size-base', '16px');
+      root.style.setProperty('--font-size-lg', '18px');
+      root.style.setProperty('--font-size-xl', '20px');
+      break;
+  }
+  
+  // Update body class for additional font size styling
+  document.body.className = document.body.className.replace(/font-size-\w+/g, '');
+  document.body.classList.add(`font-size-${fontSize}`);
+}
+
+// Focus mode application
+function applyFocusMode(enabled) {
+  const body = document.body;
+  
+  if (enabled) {
+    body.classList.add('focus-mode');
+    
+    // Hide non-essential UI elements during quiz sessions
+    if (session && session.active) {
+      const elementsToHide = [
+        'header',
+        'navigation',
+        'sidebar', 
+        '.stats-summary',
+        '.progress-indicators:not(.session-progress)',
+        '.secondary-controls'
+      ];
+      
+      elementsToHide.forEach(selector => {
+        const elements = document.querySelectorAll(selector);
+        elements.forEach(el => {
+          el.style.display = 'none';
+          el.setAttribute('data-hidden-by-focus', 'true');
+        });
+      });
+      
+      // Show only essential quiz elements
+      const qArea = document.getElementById('qArea');
+      const sessionProgress = document.querySelector('.session-progress');
+      if (qArea) qArea.style.display = 'block';
+      if (sessionProgress) sessionProgress.style.display = 'block';
+    }
+  } else {
+    body.classList.remove('focus-mode');
+    
+    // Restore hidden elements
+    const hiddenElements = document.querySelectorAll('[data-hidden-by-focus="true"]');
+    hiddenElements.forEach(el => {
+      el.style.display = '';
+      el.removeAttribute('data-hidden-by-focus');
+    });
+  }
+}
+
+// Initialize settings on page load
+function initializeSettings() {
+  const settings = getSettings();
+  applyFontSize(settings.fontSize);
+  applyFocusMode(settings.focusMode);
+}
+
+// Call initialize on DOM content loaded
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initializeSettings);
+} else {
+  initializeSettings();
+}
+
+// Preview functions for settings
+function previewFontSize(size) {
+  const preview = document.getElementById('settingsPreview');
+  if (preview) {
+    preview.style.display = 'block';
+    applyFontSize(size);
+  }
+}
+
+function previewFocusMode(enabled) {
+  const preview = document.getElementById('settingsPreview');
+  if (preview) {
+    preview.style.display = 'block';
+    preview.innerHTML = enabled 
+      ? '<div style="font-size: 14px; color: var(--muted); margin-bottom: 8px;">미리보기: 집중 모드</div><div style="font-size: var(--font-size-base);">집중 모드가 활성화되면 학습 중 불필요한 UI 요소들이 숨겨져서 문제에만 집중할 수 있습니다.</div>'
+      : '<div style="font-size: 14px; color: var(--muted); margin-bottom: 8px;">미리보기: 일반 모드</div><div style="font-size: var(--font-size-base);">일반 모드에서는 모든 UI 요소가 표시됩니다.</div>';
+  }
+}
+
+function resetToDefaults() {
+  if (confirm('모든 설정을 기본값으로 재설정하시겠습니까?')) {
+    const fontSizeSelect = document.getElementById('fontSizeSelect');
+    const focusModeToggle = document.getElementById('focusModeToggle');
+    const dailyLimitInput = document.getElementById('dailyLimitInput');
+    
+    if (fontSizeSelect) fontSizeSelect.value = 'medium';
+    if (focusModeToggle) focusModeToggle.checked = false;
+    if (dailyLimitInput) dailyLimitInput.value = '30';
+    
+    // Apply defaults immediately
+    applyFontSize('medium');
+    applyFocusMode(false);
+    
+    // Save defaults
+    setSettings({
+      fontSize: 'medium',
+      focusMode: false,
+      dailyReviewLimit: 30
+    });
+    
+    showToast('설정이 기본값으로 재설정되었습니다', 'success');
+  }
 }
 
 // ========== 유틸리티 ==========
@@ -4060,6 +4227,11 @@ window.generateQuestions = generateQuestions;
 window.toggleQuestionSelection = toggleQuestionSelection;
 window.saveGeneratedQuestions = saveGeneratedQuestions;
 window.cancelGeneration = cancelGeneration;
+window.applyFontSize = applyFontSize;
+window.applyFocusMode = applyFocusMode;
+window.previewFontSize = previewFontSize;
+window.previewFocusMode = previewFocusMode;
+window.resetToDefaults = resetToDefaults;
 window.noteLinesToDraftQuestions = noteLinesToDraftQuestions;
 window.exportNoteAsMarkdown = exportNoteAsMarkdown;
 window.addLine = addLine;
