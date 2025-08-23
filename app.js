@@ -7,6 +7,7 @@ import { exportData as dmExportData, importData as dmImportData, showGuidedImpor
 import { initTheme, toggleTheme, setTheme } from './src/modules/theme.js';
 import { createNote, updateNoteList, editNote, saveNote, closeNoteEditor, deleteNoteConfirm, exportNoteToMarkdown, convertSelectionToQuestions } from './src/modules/notes.js';
 import { handleDragStart, handleDragOver, handleDragLeave, handleDrop, handleDragEnd } from './src/modules/drag-drop.js';
+import { updateUserPerformance, selectQuestionsByDifficulty, getCurrentUserDifficulty, getDifficultyStats } from './src/modules/adaptive-difficulty.js';
 
 // Immediately bind critical functions for HTML onclick handlers
 // This ensures they're available even before DOMContentLoaded
@@ -137,6 +138,50 @@ db.version(51).upgrade(async (trans) => {
       await trans.table('notes').update(note.id, updates);
     }
   }
+});
+
+// Dexie schema v52: add adaptive difficulty fields to review table
+db.version(52).stores({
+  profile: '++id, xp, streak, lastStudy',
+  decks: '++id, name, created',
+  questions: '++id, deck, type, prompt, answer, keywords, synonyms, explain, created, sortOrder, *tags',
+  review: '++id, questionId, ease, interval, due, count, created, updated, difficulty, difficultyUpdated',
+  meta: 'key',
+  notes: '++id, deckId, title, source, content, createdAt, updatedAt',
+  note_items: '++id, noteId, ts, text, *tags'
+});
+
+// Migration hook for version 52 - add adaptive difficulty fields
+db.version(52).upgrade(async (trans) => {
+  const reviews = await trans.table('review').toArray();
+  for (const review of reviews) {
+    const updates = {};
+    
+    // Add default difficulty (medium = 3) for existing reviews
+    if (!review.difficulty) {
+      updates.difficulty = 3; // DIFFICULTY_LEVELS.MEDIUM
+    }
+    
+    // Add difficulty update timestamp
+    if (!review.difficultyUpdated) {
+      updates.difficultyUpdated = new Date().toISOString();
+    }
+    
+    // Initialize recent performance tracking
+    if (!review.recentPerformance) {
+      updates.recentPerformance = [];
+    }
+    
+    // Initialize difficulty reason
+    if (!review.difficultyReason) {
+      updates.difficultyReason = 'Default difficulty assigned';
+    }
+    
+    if (Object.keys(updates).length > 0) {
+      await trans.table('review').update(review.id, updates);
+    }
+  }
+  console.log('Adaptive difficulty migration completed');
 });
 
 // Migration hook for version 5 - add sortOrder to existing questions
@@ -832,6 +877,32 @@ async function startSessionLegacy() {
     return;
   }
   
+  // Apply adaptive difficulty to reorder queue based on user performance
+  try {
+    // Calculate current user difficulty level from recent performance
+    const recentPerformance = Object.values(review)
+      .filter(r => r.recentPerformance && r.recentPerformance.length > 0)
+      .flatMap(r => r.recentPerformance.slice(-3)); // Last 3 attempts per question
+    
+    let userDifficulty = 3; // Default to medium
+    if (recentPerformance.length > 0) {
+      userDifficulty = getCurrentUserDifficulty({ 
+        difficulty: Math.round(recentPerformance.reduce((sum, p) => sum + p.difficulty, 0) / recentPerformance.length)
+      });
+    }
+    
+    // Reorder queue using adaptive difficulty
+    const adaptiveQueue = selectQuestionsByDifficulty(queue, review, userDifficulty, 1);
+    
+    // If we got a good selection, use it; otherwise fall back to original queue
+    if (adaptiveQueue.length > 0) {
+      queue.splice(0, queue.length, ...adaptiveQueue);
+      console.log(`[Adaptive Difficulty] Selected ${queue.length} questions for difficulty level ${userDifficulty}`);
+    }
+  } catch (error) {
+    console.warn('[Adaptive Difficulty] Failed to apply adaptive selection, using standard queue:', error);
+  }
+  
   session = {
     active: true,
     deck: deckId,
@@ -841,7 +912,10 @@ async function startSessionLegacy() {
     ok: 0,
     ng: 0,
     score: 0,
-    total: queue.length
+    total: queue.length,
+    originalLength: queue.length, // Track the original number of questions
+    sessionRepeats: {}, // Track how many times each question has been repeated in this session
+    userDifficulty: getCurrentUserDifficulty({ difficulty: 3 }) // Track user's current difficulty level
   };
   
   // Show stop button when session starts
@@ -864,10 +938,10 @@ async function showQuestion() {
   const deckName = (decks.find(d => Number(d.id) === Number(q.deck)) || {}).name || 'Unknown Deck';
   
   let html = `
-    <div class="badge">${deckName} · ${q.type}</div>
-    <div class="prompt-box">${escapeHtml(q.prompt)}</div>
+    <div class="badge" role="status" aria-label="Question category">${deckName} · ${q.type}</div>
+    <div class="prompt-box" role="main" aria-label="Question prompt">${escapeHtml(q.prompt)}</div>
     <div style="margin-top:16px">
-      <button id="revealBtn" onclick="revealAnswer()" aria-expanded="false">
+      <button id="revealBtn" onclick="revealAnswer()" aria-expanded="false" aria-label="Reveal answer and answer options">
         <span>🔍</span> Reveal Answer
       </button>
     </div>
@@ -875,23 +949,24 @@ async function showQuestion() {
   
   // Hidden answer section
   html += `
-    <div id="answerSection" style="display:none" aria-hidden="true">
+    <div id="answerSection" style="display:none" aria-hidden="true" role="region" aria-label="Answer input section">
       <div style="margin-top:16px">
   `;
   
   if (q.type === 'OX') {
     html += `
-        <div class="grid grid-2">
-          <button class="success" onclick="submitAnswer('true')">⭕ True</button>
-          <button class="danger" onclick="submitAnswer('false')">❌ False</button>
+        <div class="grid grid-2" role="group" aria-label="True or False answer options">
+          <button class="success" onclick="submitAnswer('true')" aria-label="Submit True as answer">⭕ True</button>
+          <button class="danger" onclick="submitAnswer('false')" aria-label="Submit False as answer">❌ False</button>
         </div>
     `;
   } else {
     html += `
-        <textarea id="userAnswer" placeholder="답을 입력하세요..." autofocus></textarea>
-        <div style="margin-top:16px">
-          <button onclick="submitAnswer(document.getElementById('userAnswer').value)">제출</button>
-          <button class="secondary" onclick="showDontKnowAnswer()">모르겠음</button>
+        <textarea id="userAnswer" placeholder="답을 입력하세요..." autofocus aria-label="답을 입력하세요" aria-describedby="submitHint"></textarea>
+        <div id="submitHint" style="font-size:12px;color:var(--muted);margin-top:4px">Enter를 눌러 제출하거나 제출 버튼을 클릭하세요. 키보드 단축키: R/Space(정답보기), D(모르겠음), 0-3(난이도 선택)</div>
+        <div style="margin-top:16px" role="group" aria-label="Answer submission options">
+          <button onclick="submitAnswer(document.getElementById('userAnswer').value)" aria-label="답안 제출하기">제출</button>
+          <button class="secondary" onclick="showDontKnowAnswer()" aria-label="모르겠음을 선택하고 정답 보기">모르겠음</button>
         </div>
     `;
   }
@@ -899,10 +974,13 @@ async function showQuestion() {
   html += `
       </div>
     </div>
-    <div id="resultArea"></div>
+    <div id="resultArea" role="region" aria-live="polite" aria-label="Quiz result and grading options"></div>
   `;
   
   qArea.innerHTML = html;
+  
+  // Add keyboard navigation support
+  addQuizKeyboardNavigation();
   
   // Add fade-in effect
   if (typeof hideQuestionSkeleton === 'function') hideQuestionSkeleton();
@@ -914,14 +992,129 @@ function revealAnswer() {
   
   if (revealBtn && answerSection) {
     revealBtn.style.display = 'none';
+    revealBtn.setAttribute('aria-expanded', 'true');
     answerSection.style.display = 'block';
     answerSection.setAttribute('aria-hidden', 'false');
     
-    // Focus textarea if present
+    // Announce to screen readers that answer section is now available
+    const announcement = document.createElement('div');
+    announcement.setAttribute('aria-live', 'polite');
+    announcement.setAttribute('aria-atomic', 'true');
+    announcement.style.position = 'absolute';
+    announcement.style.left = '-10000px';
+    announcement.textContent = '답안 입력 영역이 표시되었습니다.';
+    document.body.appendChild(announcement);
+    setTimeout(() => announcement.remove(), 1000);
+    
+    // Focus on first interactive element in answer section
     const userAnswer = document.getElementById('userAnswer');
+    const firstButton = answerSection.querySelector('button');
     if (userAnswer) {
       setTimeout(() => userAnswer.focus(), 100);
+    } else if (firstButton) {
+      setTimeout(() => firstButton.focus(), 100);
     }
+  }
+}
+
+// Add keyboard navigation for quiz interface
+function addQuizKeyboardNavigation() {
+  // Remove existing listeners to avoid duplicates
+  document.removeEventListener('keydown', handleQuizKeydown);
+  document.addEventListener('keydown', handleQuizKeydown);
+}
+
+function handleQuizKeydown(event) {
+  // Only handle keyboard events when quiz is active
+  if (!session || !session.active) return;
+  
+  const activeElement = document.activeElement;
+  const userAnswerTextarea = document.getElementById('userAnswer');
+  const revealBtn = document.getElementById('revealBtn');
+  const resultArea = document.getElementById('resultArea');
+  
+  // Handle Enter key in textarea to submit answer
+  if (event.key === 'Enter' && activeElement === userAnswerTextarea && !event.shiftKey) {
+    event.preventDefault();
+    submitAnswer(userAnswerTextarea.value);
+    return;
+  }
+  
+  // Skip keyboard shortcuts if user is typing in textarea
+  if (activeElement === userAnswerTextarea && event.key.length === 1) {
+    return;
+  }
+  
+  // Handle keyboard shortcuts
+  switch (event.key) {
+    case ' ': // Spacebar to reveal answer
+    case 'r': // R to reveal answer
+      event.preventDefault();
+      if (revealBtn && revealBtn.style.display !== 'none') {
+        revealAnswer();
+      }
+      break;
+      
+    case '0': // Grade as "Again"
+      event.preventDefault();
+      if (resultArea && resultArea.innerHTML.includes('grade-btn')) {
+        gradeAnswer(0);
+      }
+      break;
+      
+    case '1': // Grade as "Hard"
+      event.preventDefault();
+      if (resultArea && resultArea.innerHTML.includes('grade-btn')) {
+        gradeAnswer(1);
+      }
+      break;
+      
+    case '2': // Grade as "Good"
+      event.preventDefault();
+      if (resultArea && resultArea.innerHTML.includes('grade-btn')) {
+        gradeAnswer(2);
+      }
+      break;
+      
+    case '3': // Grade as "Easy"
+      event.preventDefault();
+      if (resultArea && resultArea.innerHTML.includes('grade-btn')) {
+        gradeAnswer(3);
+      }
+      break;
+      
+    case 't': // T for True (OX questions)
+      event.preventDefault();
+      const trueBtn = document.querySelector('.success[onclick*="submitAnswer(\'true\')"');
+      if (trueBtn) {
+        submitAnswer('true');
+      }
+      break;
+      
+    case 'f': // F for False (OX questions)
+      event.preventDefault();
+      const falseBtn = document.querySelector('.danger[onclick*="submitAnswer(\'false\')"');
+      if (falseBtn) {
+        submitAnswer('false');
+      }
+      break;
+      
+    case 'd': // D for "Don't Know"
+      event.preventDefault();
+      const dontKnowBtn = document.querySelector('button[onclick="showDontKnowAnswer()"]');
+      if (dontKnowBtn) {
+        showDontKnowAnswer();
+      }
+      break;
+      
+    case 'Escape': // Escape to focus back to textarea or main area
+      event.preventDefault();
+      if (userAnswerTextarea) {
+        userAnswerTextarea.focus();
+      } else {
+        document.getElementById('qArea').focus();
+      }
+      break;
   }
 }
 
@@ -931,6 +1124,11 @@ async function submitAnswer(userAnswer) {
   if (q.type !== 'OX') {
     if (!userAnswer || userAnswer.trim() === '') {
       showToast('정답을 입력해주세요', 'warning');
+      // Focus back to textarea for accessibility
+      const userAnswerTextarea = document.getElementById('userAnswer');
+      if (userAnswerTextarea) {
+        setTimeout(() => userAnswerTextarea.focus(), 100);
+      }
       return;
     }
   }
@@ -1008,15 +1206,20 @@ async function gradeAnswerLegacy(grade) {
     document.querySelectorAll('.grade-buttons button').forEach(b => b.disabled = true);
   } catch (_) {}
   
-  // 리뷰 업데이트 with grade
+  // 리뷰 업데이트 with grade and adaptive difficulty
   const review = await getReview();
-  const updatedReview = nextSchedule(correct, review[q.id], grade);
+  const baseReviewData = nextSchedule(correct, review[q.id], grade);
+  
   // increment correct counter
   const prevCorrect = (review[q.id]?.correct || 0);
-  updatedReview.correct = prevCorrect + (correct ? 1 : 0);
-  updatedReview.lastResult = correct ? 'ok' : 'ng';
+  baseReviewData.correct = prevCorrect + (correct ? 1 : 0);
+  baseReviewData.lastResult = correct ? 'ok' : 'ng';
   const prevAgain = (review[q.id]?.againCount || 0);
-  updatedReview.againCount = prevAgain + (grade === 0 ? 1 : 0);
+  baseReviewData.againCount = prevAgain + (grade === 0 ? 1 : 0);
+  
+  // Apply adaptive difficulty logic
+  const updatedReview = updateUserPerformance(q.id, baseReviewData, correct);
+  
   await setReview(q.id, updatedReview);
 
   // Recompute and re-render interval previews on buttons using updated state
@@ -1032,10 +1235,27 @@ async function gradeAnswerLegacy(grade) {
   
   // If grade is Again (0), re-queue this question shortly and advance to next
   if (grade === 0 && session) {
-    const currentIdx = session.index;
-    const insertAt = Math.min(session.queue.length, currentIdx + 3);
-    session.queue.splice(insertAt, 0, q);
-    // Advance to next question now; it will reappear later from the re-queue
+    // Check session repeat limit (max 2 times per question per session)
+    const questionId = q.id;
+    const currentRepeats = session.sessionRepeats[questionId] || 0;
+    const MAX_SESSION_REPEATS = 2;
+    
+    if (currentRepeats < MAX_SESSION_REPEATS) {
+      // Track this repeat
+      session.sessionRepeats[questionId] = currentRepeats + 1;
+      
+      // Insert repeated questions at the end of the queue
+      // This ensures all original questions are seen before repeated ones
+      session.queue.push(q);
+      // Update total to reflect the new queue length
+      session.total = session.queue.length;
+      showToast(`문제 재등장 예정 (${currentRepeats + 1}/${MAX_SESSION_REPEATS})`, 'info');
+    } else {
+      // Question has been repeated too many times, skip re-queuing
+      showToast('이 문제는 이미 충분히 반복했습니다', 'warning');
+    }
+    
+    // Advance to next question now; it will reappear later from the re-queue (if under limit)
     session.index++;
     setTimeout(() => showQuestion(), 300);
     return;
@@ -1292,11 +1512,11 @@ async function showResult(question, userAnswer, feedback) {
   
   // Add grade buttons
   html += `
-    <div class="grade-buttons">
-      <button class="grade-btn again" onclick="gradeAnswer(0)" aria-label="Again">Again<br><small>${preview.again}</small></button>
-      <button class="grade-btn hard" onclick="gradeAnswer(1)" aria-label="Hard">Hard<br><small>${preview.hard}</small></button>
-      <button class="grade-btn good" onclick="gradeAnswer(2)" aria-label="Good">Good<br><small>${preview.good}</small></button>
-      <button class="grade-btn easy" onclick="gradeAnswer(3)" aria-label="Easy">Easy<br><small>${preview.easy}</small></button>
+    <div class="grade-buttons" role="group" aria-label="Difficulty grading options">
+      <button class="grade-btn again" onclick="gradeAnswer(0)" aria-label="Again - Review this question again soon, next due ${preview.again}">Again<br><small>${preview.again}</small></button>
+      <button class="grade-btn hard" onclick="gradeAnswer(1)" aria-label="Hard - This was difficult, next due ${preview.hard}">Hard<br><small>${preview.hard}</small></button>
+      <button class="grade-btn good" onclick="gradeAnswer(2)" aria-label="Good - This was okay, next due ${preview.good}">Good<br><small>${preview.good}</small></button>
+      <button class="grade-btn easy" onclick="gradeAnswer(3)" aria-label="Easy - This was easy, next due ${preview.easy}">Easy<br><small>${preview.easy}</small></button>
     </div>
   `;
   
@@ -1481,6 +1701,8 @@ function resetStudySession() {
   session.score = 0;
   session.ok = 0;
   session.ng = 0;
+  session.originalLength = 0;
+  session.sessionRepeats = {};
   
   const qArea = document.getElementById('qArea');
   if (qArea) {
@@ -1613,6 +1835,8 @@ async function stopLearning() {
   session.ok = 0;
   session.ng = 0;
   session.total = 0;
+  session.originalLength = 0;
+  session.sessionRepeats = {};
   
   await updateProgress();
 }
@@ -3046,6 +3270,8 @@ document.addEventListener('DOMContentLoaded', async function() {
    // Initialize UI
    await updateHeader();
   await updateDeckSelects();
+  // Initialize answer field display for default OX question type
+  updateAnswerField();
   // Optional: guided import setup (guard if not defined)
   try { if (typeof setupGuidedImport === 'function') setupGuidedImport(); } catch (_) {}
    

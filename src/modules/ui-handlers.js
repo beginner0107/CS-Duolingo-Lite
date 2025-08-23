@@ -283,7 +283,20 @@ function updateSaveEnabled() {
 async function renderNotesList() {
   const search = document.getElementById('qNoteSearch')?.value || '';
   const deckId = document.getElementById('qNoteDeckFilter')?.value || '';
-  const notes = await getNotes({ search, deckId });
+  let notes = await getNotes();
+  
+  // Apply filters
+  if (search) {
+    notes = notes.filter(n => 
+      (n.title && n.title.toLowerCase().includes(search.toLowerCase())) ||
+      (n.content && n.content.toLowerCase().includes(search.toLowerCase())) ||
+      (n.source && n.source.toLowerCase().includes(search.toLowerCase()))
+    );
+  }
+  if (deckId) {
+    notes = notes.filter(n => n.deckId == deckId);
+  }
+  
   const list = document.getElementById('notesList');
   let html = '';
   notes.forEach(n => {
@@ -355,11 +368,24 @@ export async function saveNote() {
   const content = (document.getElementById('noteTextarea')?.value || '').trim();
   if (!title || !content) { showToast('제목과 내용을 입력하세요', 'warning'); return; }
   if (!currentNoteId) {
-    const id = await addNote({ deckId, title, source, content });
+    const id = await addNote({ 
+      deckId, 
+      title, 
+      source, 
+      content, 
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
     currentNoteId = id;
     showToast('노트가 저장되었습니다', 'success');
   } else {
-    await updateNote(currentNoteId, { deckId, title, source, content });
+    await updateNote(currentNoteId, { 
+      deckId, 
+      title, 
+      source, 
+      content, 
+      updatedAt: new Date()
+    });
     showToast('노트가 업데이트되었습니다', 'success');
   }
   await renderNotesList();
