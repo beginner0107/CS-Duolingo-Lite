@@ -13,4 +13,5 @@ For detailed information about specific parts of the codebase:
 - **[`ai/CLAUDE.md`](ai/CLAUDE.md)**: AI integration layer (CloudAdapter, LocalAdapter, question generation, answer grading)
 - **[`server/CLAUDE.md`](server/CLAUDE.md)**: Express.js backend API (optional server-side components)
 - **[`src/modules/CLAUDE.md`](src/modules/CLAUDE.md)**: Modular frontend components (session, scoring, statistics, etc.)
+- **[`src/types/CLAUDE.md`](src/types/CLAUDE.md)**: TypeScript type definitions (quiz models, function signatures, migration guide)
 - **[`src/utils/CLAUDE.md`](src/utils/CLAUDE.md)**: Utility functions (DOM manipulation, validation, security)

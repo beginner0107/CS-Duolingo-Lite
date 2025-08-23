@@ -85,10 +85,31 @@ export function checkShortAnswer(correctAnswer, userAnswer, synonyms = [], fuzzy
   return false;
 }
 
+function toKeywordsArray(keywords) {
+  if (Array.isArray(keywords)) return keywords;
+  if (keywords == null) return [];
+  if (typeof keywords === 'string') {
+    const s = keywords.trim();
+    try {
+      const parsed = JSON.parse(s);
+      if (Array.isArray(parsed)) return parsed;
+    } catch (_) {}
+    return s.split(/[ ,\n]+/).map(x => x.trim()).filter(Boolean);
+  }
+  if (typeof keywords === 'object') {
+    if (Array.isArray(keywords.keywords)) return keywords.keywords;
+    if (Array.isArray(keywords.items)) return keywords.items;
+    const vals = Object.values(keywords);
+    if (vals.every(v => typeof v === 'string')) return vals;
+  }
+  return [];
+}
+
 export function buildKeywordGroups(keywords) {
-  return keywords.map(k => {
-    const parts = k.split('|').map(p => p.trim());
-    const variants = parts.length > 1 ? parts : [k.trim()];
+  const arr = toKeywordsArray(keywords);
+  return arr.map(k => {
+    const parts = String(k).split('|').map(p => p.trim()).filter(Boolean);
+    const variants = parts.length > 0 ? parts : [String(k).trim()];
     return variants.map(variant => {
       if (variant.startsWith('/') && variant.endsWith('/') && variant.length > 2) {
         return { type: 'regex', pattern: variant.slice(1, -1) };
@@ -331,7 +352,8 @@ export function gradeQuestion(q, userAnswer) {
 
 // Async version that uses local AI modules for advanced grading
 export async function gradeQuestionAsync(q, userAnswer) {
-  if (q?.type === 'ESSAY') {
+  // Use AI for true essays and essay-like keyword questions when cloud is enabled
+  if (q?.type === 'ESSAY' || q?.type === 'KEYWORD') {
     // Check if AI is available and connected
     const aiMode = localStorage.getItem('aiMode') || 'local';
     const hasAiConfig = window.__AI_CONF && window.__AI_CONF.apiKey;
