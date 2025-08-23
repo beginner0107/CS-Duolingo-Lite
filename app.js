@@ -1398,9 +1398,35 @@ function checkShortAnswer(correctAnswer, userAnswer, synonyms = [], fuzzyEnabled
 }
 
 // Keyword matching with N-of-M threshold, fuzzy match, and per-keyword synonyms
+function toKeywordsArray(keywords) {
+  if (Array.isArray(keywords)) return keywords;
+  if (keywords == null) return [];
+  // If JSON string of array
+  if (typeof keywords === 'string') {
+    const str = keywords.trim();
+    try {
+      const parsed = JSON.parse(str);
+      if (Array.isArray(parsed)) return parsed;
+    } catch (_) {}
+    return str
+      .split(/[ ,\n]+/)
+      .map(s => s.trim())
+      .filter(Boolean);
+  }
+  // Object-like collections: {0:'a',1:'b'} or {keywords:[...]}
+  if (typeof keywords === 'object') {
+    if (Array.isArray(keywords.keywords)) return keywords.keywords;
+    if (Array.isArray(keywords.items)) return keywords.items;
+    const vals = Object.values(keywords);
+    if (vals.every(v => typeof v === 'string')) return vals;
+  }
+  return [];
+}
+
 function buildKeywordGroups(keywords) {
   // Each entry may have alternatives separated by '|', e.g., "process|프로세스"
-  return (keywords || []).map(entry =>
+  const arr = toKeywordsArray(keywords);
+  return arr.map(entry =>
     String(entry)
       .split('|')
       .map(s => normalizeText(s))
@@ -1468,7 +1494,8 @@ async function showResult(question, userAnswer, feedback) {
   if (feedback) {
     const hitsStr = feedback.hits.length ? feedback.hits.join(', ') : '없음';
     const missesStr = feedback.misses.length ? feedback.misses.join(', ') : '없음';
-    const scoreLabel = question.type === 'ESSAY' ? `${Math.round((feedback.score || 0) * 100)}/100` : feedback.score.toFixed(2);
+    // Always display as 100-point scale
+    const scoreLabel = `${Math.round((Number(feedback.score) || 0) * 100)}/100`;
     html += `<div style="font-size:14px;color:var(--muted);margin-bottom:8px">`;
     html += `점수: ${scoreLabel} • 일치: [${hitsStr}] • 누락: [${missesStr}]${feedback.notes ? ' • ' + feedback.notes : ''}`;
     html += `</div>`;
@@ -1486,7 +1513,8 @@ async function showResult(question, userAnswer, feedback) {
       const match = matchKeywordAnswer(question, userAnswer);
       html += `<div>키워드 매칭 (${match.matched}/${match.total}, 임계값 ${match.threshold})</div>`;
       html += '<div>필요 키워드: ';
-      question.keywords.forEach((k, idx) => {
+      const kwArr = toKeywordsArray(question.keywords);
+      kwArr.forEach((k, idx) => {
         const found = !!match.perGroup[idx];
         html += `<span class="keyword-match" style="${found ? '' : 'opacity:0.5'}">${k}${found ? ' ✓' : ''}</span>`;
       });
@@ -1500,8 +1528,8 @@ async function showResult(question, userAnswer, feedback) {
     html += `<div style="margin-top:8px;color:var(--muted)">${question.explain}</div>`;
   }
   
-  // Add chatbot feature for ESSAY questions when AI is connected (correct or incorrect)
-  if (question.type === 'ESSAY' && feedback.aiGraded) {
+  // Add chatbot feature when AI was used for grading (correct or incorrect)
+  if (feedback && feedback.aiGraded) {
     html += `
       <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
         <div style="margin-bottom:8px;font-weight:bold;color:var(--text)">💬 AI와 추가 질문하기</div>
@@ -2093,6 +2121,11 @@ async function openEditQuestion(id) {
   if (!q) { showToast('문제를 찾을 수 없습니다', 'danger'); return; }
   const decks = await getDecks();
   const deckOptions = decks.map(d => `<option value="${d.id}" ${String(d.id)===String(q.deck)?'selected':''}>${d.name}</option>`).join('');
+  const kwDisplay = Array.isArray(q.keywords)
+    ? q.keywords
+    : (typeof q.keywords === 'string'
+        ? q.keywords.split(',').map(s=>s.trim()).filter(Boolean)
+        : []);
   const html = `
     <h3 style="margin-top:0">문제 수정</h3>
     <div class="grid">
@@ -2123,7 +2156,7 @@ async function openEditQuestion(id) {
       </div>
       <div id="editKeyWrap" style="display:${q.type==='ESSAY'||q.type==='KEYWORD'?'block':'none'}">
         <label style="color:var(--muted);font-size:14px">키워드 (쉼표, 항목 내 a|b 허용)</label>
-        <input type="text" id="editKeywords" value="${(q.keywords||[]).join(', ')}">
+        <input type="text" id="editKeywords" value="${kwDisplay.join(', ')}">
         <label style="color:var(--muted);font-size:14px;margin-top:8px">임계값 (예: 7/10 또는 숫자)</label>
         <input type="text" id="editKeyThr" value="${q.keywordThreshold||''}">
       </div>
@@ -4087,8 +4120,9 @@ function buildGenerationPrompt(topic, difficulty, questionType, count) {
 - ${questionType === 'KEYWORD' ? 'keywords는 3-5개의 핵심 키워드 배열' : ''}
 - 실제 CS 시험/면접 수준의 고품질 문제
 - JSON 형식 엄격 준수 (문법 오류 없이)
+ - 각 문제는 280자 이내, 해설은 1~2문장(60~120자)로 간결히 작성
 
-**응답 예시:**`;
+`;
 }
 
 function displayGeneratedQuestions() {
@@ -4158,7 +4192,10 @@ async function saveGeneratedQuestions() {
       };
 
       if (questionType === 'KEYWORD' && q.keywords) {
-        questionData.keywords = Array.isArray(q.keywords) ? q.keywords.join(',') : String(q.keywords);
+        const arr = Array.isArray(q.keywords)
+          ? q.keywords
+          : toKeywordsArray(q.keywords);
+        questionData.keywords = arr;
       }
 
       await db.questions.add(questionData);

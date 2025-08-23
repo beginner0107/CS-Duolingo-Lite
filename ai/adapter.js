@@ -432,9 +432,53 @@ Output format (MUST):
       if (!result) {
         throw new Error(`No valid JSON found in response: ${content?.substring(0, 200)}...`);
       }
-      
+
+      // Fallbacks: accept single object or array of question-like objects
       if (!result.questions) {
-        throw new Error(`Missing 'questions' property in response: ${JSON.stringify(result)}`);
+        // Case 1: top-level array of objects
+        if (Array.isArray(result)) {
+          result = { questions: result };
+        } else if (
+          // Case 2: single question-like object
+          typeof result === 'object' &&
+          (result.prompt || result.question || result.text) &&
+          (result.answer !== undefined || result.correct !== undefined)
+        ) {
+          result = { questions: [result] };
+        } else {
+          // Case 3: try to salvage from raw content when model partially output an array
+          if (typeof content === 'string' && content.includes('"questions"')) {
+            const objPattern = /\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\})*)*\})*)*\}/g;
+            const matches = content.match(objPattern) || [];
+            const questions = [];
+            for (const m of matches) {
+              try {
+                const parsed = JSON.parse(m);
+                // Prefer full payload if encountered later
+                if (parsed && Array.isArray(parsed.questions)) {
+                  result = { questions: parsed.questions };
+                  break;
+                }
+                // Collect question-like objects
+                const prompt = parsed?.prompt || parsed?.question || parsed?.text;
+                const ans = parsed?.answer !== undefined ? parsed?.answer : parsed?.correct;
+                const expl = parsed?.explanation || parsed?.rationale || parsed?.reason || parsed?.detail || parsed?.describe;
+                if (prompt && ans !== undefined && expl) {
+                  questions.push(parsed);
+                }
+              } catch (_) {
+                // skip invalid segment
+              }
+            }
+            if (!result.questions && questions.length > 0) {
+              result = { questions };
+            }
+          }
+
+          if (!result.questions) {
+            throw new Error(`Missing 'questions' property in response: ${JSON.stringify(result)}`);
+          }
+        }
       }
       
       if (!Array.isArray(result.questions)) {
