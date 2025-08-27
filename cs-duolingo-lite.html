@@ -71,23 +71,34 @@
         </div>
 
         <div class="card">
-          <h2>📈 진행 상황</h2>
+          <h2>📈 학습 진행 상황</h2>
+          
+          <!-- Daily Goal Section -->
           <div id="dailyGoalPanel" class="daily-goal-panel">
-            <div>오늘의 목표</div>
-            <div class="goal-progress" id="goalProgressText">0/25</div>
+            <div style="font-weight:bold;margin-bottom:4px">오늘의 학습 목표</div>
+            <div class="goal-progress" id="goalProgressText">0/30</div>
             <div class="goal-bar">
               <div class="goal-fill" id="goalProgressBar" style="width:0%"></div>
             </div>
-            <div class="goal-progress" style="margin-top:6px">오늘 남은 복습: <span id="dueLeft">0/0</span></div>
-            <div style="font-size:12px;opacity:0.9">복습 20개 + 새 문제 5개</div>
+            <div class="goal-progress" style="margin-top:8px;font-size:13px">
+              복습할 문제: <span id="dueCount" style="color:var(--primary);font-weight:bold">0</span>개
+            </div>
+            <div style="font-size:12px;color:var(--muted);margin-top:4px" id="dailyGoalDescription">
+              매일 꾸준히 학습하여 목표를 달성하세요
+            </div>
           </div>
-          <div class="progress-bar">
-            <div class="progress-fill" id="progressBar" style="width:0%"></div>
-          </div>
-          <div style="display:flex;justify-content:space-between">
-            <span class="badge">진행: <strong id="prog">0/0</strong></span>
-            <span class="badge success">정답: <strong id="okCnt">0</strong></span>
-            <span class="badge danger">오답: <strong id="ngCnt">0</strong></span>
+          
+          <!-- Current Session Progress -->
+          <div id="sessionProgressPanel" style="margin-top:16px;display:none">
+            <div style="font-weight:bold;margin-bottom:8px">현재 세션 진행률</div>
+            <div class="progress-bar">
+              <div class="progress-fill" id="progressBar" style="width:0%"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-top:8px">
+              <span class="badge">진행: <strong id="prog">0/0</strong></span>
+              <span class="badge success">정답: <strong id="okCnt">0</strong></span>
+              <span class="badge danger">오답: <strong id="ngCnt">0</strong></span>
+            </div>
           </div>
         </div>
       </div>
@@ -244,9 +255,26 @@
             <span>🗑️</span> 전체 초기화
           </button>
           <button onclick="resetData()" class="secondary">
-            <span>🌱</span> 샘플 데이터 추가
+            <span>🌱</span> 백엔드 면접 문제 추가
           </button>
         </div>
+        
+        <div style="margin-top:16px;padding:12px;background:var(--surface);border-radius:8px;border-left:4px solid #3b82f6">
+          <h3 style="font-size:14px;color:var(--muted);margin:0 0 8px 0">🐳 Docker 컨테이너용 백업</h3>
+          <div class="grid grid-2" style="gap:8px">
+            <button onclick="downloadBackup()" class="secondary" style="font-size:13px">
+              <span>💾</span> 백업 다운로드
+            </button>
+            <button onclick="document.getElementById('backupFile').click()" class="secondary" style="font-size:13px">
+              <span>📁</span> 백업 복원
+            </button>
+            <input type="file" id="backupFile" accept=".json" style="display:none" onchange="handleBackupUpload(event)">
+          </div>
+          <div style="margin-top:6px;font-size:11px;color:var(--muted)">
+            컨테이너 재시작 시 데이터 보존을 위한 백업/복원 기능
+          </div>
+        </div>
+        
         <div style="margin-top:16px">
           <h3 style="font-size:16px;color:var(--muted)">가이드형 가져오기</h3>
           <div id="importDrop" style="border:1px dashed var(--muted); border-radius:8px; padding:16px; text-align:center; color:var(--muted)">
@@ -324,8 +352,8 @@
         <h2>🤖 AI 문제 생성</h2>
         <div class="grid grid-3">
           <div>
-            <label style="color:var(--muted);font-size:14px">주제</label>
-            <input type="text" id="aiTopic" placeholder="예: 운영체제, 네트워크, 알고리즘">
+            <label style="color:var(--muted);font-size:14px">덱 선택</label>
+            <select id="aiDeckSelect"></select>
           </div>
           <div>
             <label style="color:var(--muted);font-size:14px">난이도</label>
@@ -342,10 +370,6 @@
               <option value="SHORT">단답형</option>
               <option value="KEYWORD">키워드형</option>
             </select>
-          </div>
-          <div>
-            <label style="color:var(--muted);font-size:14px">덱 선택</label>
-            <select id="aiDeckSelect"></select>
           </div>
           <div>
             <label style="color:var(--muted);font-size:14px">문제 수</label>

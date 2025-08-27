@@ -8,10 +8,34 @@ import { initTheme, toggleTheme, setTheme } from './src/modules/theme.js';
 import { createNote, updateNoteList, editNote, saveNote, closeNoteEditor, deleteNoteConfirm, exportNoteToMarkdown, convertSelectionToQuestions } from './src/modules/notes.js';
 import { handleDragStart, handleDragOver, handleDragLeave, handleDrop, handleDragEnd } from './src/modules/drag-drop.js';
 import { updateUserPerformance, selectQuestionsByDifficulty, getCurrentUserDifficulty, getDifficultyStats } from './src/modules/adaptive-difficulty.js';
+import { initializeDatabaseWithHealthCheck, getDeck, getQuestions, getReview, addQuestion } from './src/modules/database.js';
+import { enableFallbackStorage, isFallbackEnabled, getFallbackStorageInfo } from './src/utils/storage-fallback.js';
+import { initializePersistenceMonitoring } from './src/utils/persistence-monitor.js';
+import { enableAutoBackup, checkAndRestore, downloadBackup, uploadBackup } from './src/utils/docker-persistence.js';
+import { loadBackendInterviewData, getBackendInterviewSampleData } from './src/utils/backend-interview-loader.js';
 
 // Immediately bind critical functions for HTML onclick handlers
 // This ensures they're available even before DOMContentLoaded
-window.showTab = uiShowTab;
+
+// Ensure showTab is available immediately with fallback
+window.showTab = function(e, tabName) {
+  if (typeof uiShowTab === 'function') {
+    return uiShowTab(e, tabName);
+  } else {
+    // Fallback for before modules load
+    console.log(`Tab switch requested: ${tabName} (using fallback)`);
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(t => t.style.display = 'none');
+    if (e && e.target) e.target.classList.add('active');
+    const tab = document.getElementById(tabName + 'Tab');
+    if (tab) tab.style.display = 'block';
+  }
+};
+
+// Also bind the ui version when available
+if (typeof uiShowTab === 'function') {
+  window.showTab = uiShowTab;
+}
 window.openEditQuestion = uiOpenEditQuestion;
 window.saveEditQuestion = uiSaveEditQuestion;
 window.closeEditModal = uiCloseEditModal;
@@ -40,7 +64,19 @@ window.initializeImport = showGuidedImport;
 window.showImportPreview = handleGuidedImport;
 window.quickAddFromText = showQuickAdd;
 window.quickAddQuestion = submitQuickAdd;
-window.toggleTheme = toggleTheme;
+// Use legacy implementation for immediate availability
+window.toggleTheme = function() {
+  const current = localStorage.getItem('theme') || 'light';
+  const next = current === 'light' ? 'dark' : 'light';
+  localStorage.setItem('theme', next);
+  document.documentElement.setAttribute('data-theme', next);
+  
+  // Update theme icon
+  const icon = document.querySelector('.theme-icon');
+  if (icon) {
+    icon.textContent = next === 'dark' ? '☀️' : '🌙';
+  }
+};
 window.createNote = createNote;
 window.editNote = editNote;
 window.saveNote = saveNote;
@@ -53,6 +89,22 @@ window.handleDragOver = handleDragOver;
 window.handleDragLeave = handleDragLeave;
 window.handleDrop = handleDrop;
 window.handleDragEnd = handleDragEnd;
+window.downloadBackup = downloadBackup;
+window.uploadBackup = uploadBackup;
+window.handleBackupUpload = function(event) {
+  const file = event.target.files[0];
+  if (file) {
+    uploadBackup(file);
+  }
+};
+
+// Debug functions for testing persistence
+window._debugPersistence = {
+  checkDatabase: () => initializeDatabaseWithHealthCheck(),
+  enableFallback: enableFallbackStorage,
+  getFallbackInfo: getFallbackStorageInfo,
+  isFallbackEnabled: isFallbackEnabled
+};
 
 // Forward declaration for deleteQuestion (defined later in file)
 window.deleteQuestion = (...args) => deleteQuestion(...args);
@@ -647,9 +699,7 @@ async function setDecks(decks) {
   console.warn('setDecks is deprecated, use DataStore.addDeck instead');
 }
 
-async function getQuestions() {
-  return await DataStore.getQuestions();
-}
+// getQuestions function removed - using imported version from database module
 
 async function setQuestions(questions) {
   // This function is replaced by individual question operations
@@ -665,9 +715,7 @@ async function setProfile(profile) {
   await updateHeader();
 }
 
-async function getReview() {
-  return await DataStore.getReview();
-}
+// getReview function removed - now using imported version from database.js
 
 async function setReview(questionId, reviewData) {
   await DataStore.setReview(questionId, reviewData);
@@ -774,15 +822,47 @@ async function startSessionLegacy() {
   const deckId = document.getElementById('deckSelect').value;
   const count = parseInt(document.getElementById('questionCount').value);
   
+  console.log(`Starting session: deckId="${deckId}", count=${count}`);
+  
   // Show loading skeleton
   if (typeof showQuestionSkeleton === 'function') showQuestionSkeleton();
   
-  const questions = await getQuestions();
-  const review = await getReview();
+  let questions, review;
+  try {
+    console.log('Checking database connection...');
+    const totalCount = await db.questions.count();
+    console.log(`Direct DB query - total questions: ${totalCount}`);
+    
+    console.log('Calling getQuestions()...');
+    questions = await getQuestions();
+    console.log('getQuestions() result:', questions?.length || 'null/undefined');
+    
+    if (!questions || questions.length === 0) {
+      console.log('getQuestions() returned empty, trying direct DB query...');
+      questions = await db.questions.toArray();
+      console.log('Direct DB query result:', questions?.length || 'null/undefined');
+    }
+    
+    console.log('Calling getReview()...');
+    review = await getReview();
+    console.log('getReview() result:', Object.keys(review || {}).length, 'items');
+  } catch (error) {
+    console.error('Error getting questions/review:', error);
+    showToast('데이터 로딩 중 오류가 발생했습니다', 'error');
+    return;
+  }
+  
   const today = todayStr();
+  
+  console.log(`Total questions in DB: ${questions.length}`);
+  if (questions.length > 0) {
+    console.log('Sample question decks:', questions.slice(0, 5).map(q => ({ id: q.id, deck: q.deck, type: typeof q.deck })));
+  }
 
-  // Classify questions by category
-  const inDeck = questions.filter(q => String(q.deck) === String(deckId));
+  // Classify questions by category (convert deckId to number for proper comparison)
+  const numericDeckId = Number(deckId);
+  const inDeck = questions.filter(q => q.deck === numericDeckId);
+  console.log(`Questions in selected deck (${deckId} -> ${numericDeckId}): ${inDeck.length}`);
   const seenIds = new Set(Object.keys(review).map(Number));
 
   const isDue = (q) => review[q.id]?.due && review[q.id].due <= today;
@@ -933,6 +1013,16 @@ async function startSessionLegacy() {
 }
 
 async function showQuestion() {
+  // Check if we've completed all original questions (not including repeated ones)
+  // Use completedUnique set to track unique question IDs we've processed
+  if (!session.completedUnique) session.completedUnique = new Set();
+  
+  if (session.completedUnique.size >= session.total) {
+    await finishSession();
+    return;
+  }
+  
+  // Also check if we've run out of questions in the queue
   if (session.index >= session.queue.length) {
     await finishSession();
     return;
@@ -1036,6 +1126,7 @@ function handleQuizKeydown(event) {
   
   const activeElement = document.activeElement;
   const userAnswerTextarea = document.getElementById('userAnswer');
+  const chatInput = document.getElementById('chatInput');
   const revealBtn = document.getElementById('revealBtn');
   const resultArea = document.getElementById('resultArea');
   
@@ -1046,8 +1137,8 @@ function handleQuizKeydown(event) {
     return;
   }
   
-  // Skip keyboard shortcuts if user is typing in textarea
-  if (activeElement === userAnswerTextarea && event.key.length === 1) {
+  // Skip keyboard shortcuts if user is typing in textarea or chat input
+  if ((activeElement === userAnswerTextarea || activeElement === chatInput) && event.key.length === 1) {
     return;
   }
   
@@ -1253,8 +1344,8 @@ async function gradeAnswerLegacy(grade) {
       // Insert repeated questions at the end of the queue
       // This ensures all original questions are seen before repeated ones
       session.queue.push(q);
-      // Update total to reflect the new queue length
-      session.total = session.queue.length;
+      // Don't update session.total - keep it as original question count
+      // The queue can be longer than total for repeated questions
       showToast(`문제 재등장 예정 (${currentRepeats + 1}/${MAX_SESSION_REPEATS})`, 'info');
     } else {
       // Question has been repeated too many times, skip re-queuing
@@ -1263,11 +1354,20 @@ async function gradeAnswerLegacy(grade) {
     
     // Advance to next question now; it will reappear later from the re-queue (if under limit)
     session.index++;
+    await updateProgress(); // Update progress after advancing
     setTimeout(() => showQuestion(), 300);
     return;
   }
   
   // Only count completion stats for non-Again grades
+  const questionId = q.id;
+  
+  // Track this question as completed (for unique counting) - but not if it will be repeated
+  if (!session.completedUnique) session.completedUnique = new Set();
+  if (grade !== 0) { // Only mark as completed if not "Again"
+    session.completedUnique.add(questionId);
+  }
+  
   // Update session counters for completed questions
   if (correct) session.ok++; 
   else session.ng++;
@@ -1296,6 +1396,7 @@ async function gradeAnswerLegacy(grade) {
   
   // Show next question
   session.index++;
+  await updateProgress(); // Update progress after counters are incremented
   setTimeout(() => showQuestion(), 300);
 }
 
@@ -1519,7 +1620,8 @@ async function showResult(question, userAnswer, feedback) {
         html += `<span class="keyword-match" style="${found ? '' : 'opacity:0.5'}">${k}${found ? ' ✓' : ''}</span>`;
       });
       html += '</div>';
-    } else if (question.answer) {
+    } else if (question.answer && question.type !== 'ESSAY') {
+      // For non-ESSAY questions, show the answer separately
       html += `<div>정답: <strong>${question.answer}</strong></div>`;
     }
   }
@@ -1537,6 +1639,7 @@ async function showResult(question, userAnswer, feedback) {
         <div style="display:flex;gap:8px">
           <input type="text" id="chatInput" placeholder="이 문제에 대해 더 궁금한 점을 물어보세요..." 
                  style="flex:1;padding:8px;border:1px solid var(--border);border-radius:4px;font-size:14px"
+                 autocorrect="off" autocapitalize="off" spellcheck="false"
                  onkeydown="if(event.key==='Enter') askChatQuestion()">
           <button onclick="askChatQuestion()" style="padding:8px 12px;background:var(--primary);color:white;border:none;border-radius:4px;cursor:pointer">질문</button>
         </div>
@@ -1560,6 +1663,9 @@ async function showResult(question, userAnswer, feedback) {
 
 async function finishSession() {
   session.active = false;
+  
+  // Set index to total to show complete progress
+  session.index = session.total;
   
   // Hide stop button when session finishes
   const stopBtn = document.getElementById('stopBtn');
@@ -1614,11 +1720,12 @@ async function finishSession() {
  `;
  
  await updateHeader();
+ await updateProgress(); // Update progress to show completion
  showToast(`세션 완료! +${session.score} XP 획득`, 'success');
 }
 
 // ========== 문제 추가 ==========
-async function addQuestion() {
+async function addQuestionLegacy() {
  const deck = document.getElementById('newDeck').value;
  const type = document.getElementById('newType').value;
  const prompt = document.getElementById('newPrompt').value.trim();
@@ -1737,6 +1844,7 @@ function resetStudySession() {
   session.ng = 0;
   session.originalLength = 0;
   session.sessionRepeats = {};
+  session.completedUnique = new Set();
   
   const qArea = document.getElementById('qArea');
   if (qArea) {
@@ -1871,6 +1979,7 @@ async function stopLearning() {
   session.total = 0;
   session.originalLength = 0;
   session.sessionRepeats = {};
+  session.completedUnique = new Set();
   
   await updateProgress();
 }
@@ -1943,8 +2052,9 @@ async function updateHeader() {
  const v = await getSchemaVersion();
  const el = document.getElementById('dbVer');
  if (el) el.textContent = 'v' + (v ?? '0');
- updateDueLeftUI();
- document.getElementById('dueCount').textContent = await getDueCount();
+ 
+ // Update progress section with better logic
+ await updateDailyGoalProgress();
 }
 
 async function getDueCount() {
@@ -1954,29 +2064,71 @@ async function getDueCount() {
 }
 
 async function updateProgress() {
- const percent = session.total > 0 ? (session.index / session.total * 100) : 0;
- document.getElementById('progressBar').style.width = percent + '%';
- document.getElementById('prog').textContent = `${session.index}/${session.total}`;
- document.getElementById('okCnt').textContent = session.ok;
- document.getElementById('ngCnt').textContent = session.ng;
- 
-  // Update daily goal progress using daily stats (reviewsDone vs limit)
-  const { reviewsDone = 0 } = getDailyStats();
-  const totalTarget = getSettings().dailyReviewLimit; // keep existing label and target source
-  const goalPercent = Math.min(100, (reviewsDone / totalTarget) * 100);
+  // Update session progress (only visible during active sessions)
+  const sessionPanel = document.getElementById('sessionProgressPanel');
+  if (session.total > 0) {
+    sessionPanel.style.display = 'block';
+    
+    // Calculate progress based on completed questions (ok + ng)
+    const completed = session.ok + session.ng;
+    const percent = (completed / session.total * 100);
+    document.getElementById('progressBar').style.width = percent + '%';
+    document.getElementById('prog').textContent = `${completed}/${session.total}`;
+    document.getElementById('okCnt').textContent = session.ok;
+    document.getElementById('ngCnt').textContent = session.ng;
+    
+    // If session is complete, hide the progress panel after a delay
+    if (session.index >= session.total && !session.active) {
+      setTimeout(() => {
+        sessionPanel.style.display = 'none';
+      }, 5000); // Hide after 5 seconds
+    }
+  } else {
+    sessionPanel.style.display = 'none';
+  }
   
-  document.getElementById('goalProgressText').textContent = `${reviewsDone}/${totalTarget}`;
-  document.getElementById('goalProgressBar').style.width = goalPercent + '%';
-  updateDueLeftUI();
+  // Update daily goal progress
+  await updateDailyGoalProgress();
 }
 
-function updateDueLeftUI() {
-  const el = document.getElementById('dueLeft');
-  if (!el) return;
-  const { reviewsDone = 0 } = getDailyStats();
-  const totalTarget = getSettings().dailyReviewLimit;
-  const left = Math.max(0, totalTarget - reviewsDone);
-  el.textContent = `${left}/${totalTarget}`;
+async function updateDailyGoalProgress() {
+  try {
+    const { reviewsDone = 0 } = getDailyStats();
+    const settings = getSettings();
+    const dailyTarget = settings.dailyReviewLimit;
+    const dueToday = await getDueCount();
+    
+    // Update daily progress
+    const goalPercent = Math.min(100, (reviewsDone / dailyTarget) * 100);
+    const goalProgressText = document.getElementById('goalProgressText');
+    const goalProgressBar = document.getElementById('goalProgressBar');
+    const dueCountEl = document.getElementById('dueCount');
+    const goalDescEl = document.getElementById('dailyGoalDescription');
+    
+    if (goalProgressText) goalProgressText.textContent = `${reviewsDone}/${dailyTarget}`;
+    if (goalProgressBar) goalProgressBar.style.width = goalPercent + '%';
+    if (dueCountEl) dueCountEl.textContent = dueToday;
+    
+    // Update description based on progress
+    if (goalDescEl) {
+      if (reviewsDone >= dailyTarget) {
+        goalDescEl.textContent = '🎉 오늘의 목표를 달성했습니다! 훌륭해요!';
+        goalDescEl.style.color = 'var(--success)';
+      } else if (dueToday > 0) {
+        goalDescEl.textContent = `복습할 문제가 ${dueToday}개 있습니다. 지금 학습을 시작해보세요!`;
+        goalDescEl.style.color = 'var(--primary)';
+      } else if (reviewsDone > 0) {
+        const remaining = dailyTarget - reviewsDone;
+        goalDescEl.textContent = `목표까지 ${remaining}개 더 학습하면 됩니다!`;
+        goalDescEl.style.color = 'var(--muted)';
+      } else {
+        goalDescEl.textContent = '오늘의 첫 학습을 시작해보세요!';
+        goalDescEl.style.color = 'var(--muted)';
+      }
+    }
+  } catch (error) {
+    console.error('Failed to update daily goal progress:', error);
+  }
 }
 
 async function updateDeckSelects() {
@@ -2000,16 +2152,23 @@ async function updateDeckSelects() {
  if (qNoteDeckFilter) qNoteDeckFilter.innerHTML = htmlWithAll;
 
  const aiDeckSelect = document.getElementById('aiDeckSelect');
- if (aiDeckSelect) aiDeckSelect.innerHTML = html;
+ if (aiDeckSelect) {
+   // Add special handling for AI deck select
+   const aiHtml = decks.length > 0 ? html : '<option value="">덱을 먼저 생성해주세요</option>';
+   aiDeckSelect.innerHTML = aiHtml;
+ }
 }
 
 async function updateDeckList() {
  const decks = await getDecks();
- const questions = await getQuestions();
  
  let html = '';
- decks.forEach(d => {
-   const count = questions.filter(q => String(q.deck) === String(d.id)).length;
+ 
+ // Get question counts for each deck using direct database queries (more accurate)
+ for (const d of decks) {
+   const count = await db.questions.where('deck').equals(d.id).count();
+   console.log(`Deck "${d.name}" (ID: ${d.id}): ${count} questions`);
+   
    html += `
      <div class="question-item">
        <div>
@@ -2021,58 +2180,96 @@ async function updateDeckList() {
        </button>
      </div>
    `;
- });
+ }
  
  document.getElementById('deckList').innerHTML = html;
 }
 
 async function updateQuestionList() {
-	const search = document.getElementById('qSearch').value.toLowerCase();
-	const type = document.getElementById('qTypeFilter').value;
-	const tag = document.getElementById('qTagFilter').value.toLowerCase();
-	const deckId = document.getElementById('qDeckFilter').value;
+	const searchEl = document.getElementById('qSearch');
+	const typeEl = document.getElementById('qTypeFilter');
+	const tagEl = document.getElementById('qTagFilter');
+	const deckEl = document.getElementById('qDeckFilter');
+	
+	const search = (searchEl?.value || '').toLowerCase();
+	const type = typeEl?.value || '';
+	const tag = (tagEl?.value || '').toLowerCase();
+	const deckId = deckEl?.value || '';
+	
+	console.log('Filter elements exist:', { 
+		searchEl: !!searchEl, 
+		typeEl: !!typeEl, 
+		tagEl: !!tagEl, 
+		deckEl: !!deckEl 
+	});
+	console.log('Filter values:', { search, type, tag, deckId });
 
 	let query;
 	
 	// Start with deck filter if specified (most efficient)
 	if (deckId) {
-		query = db.questions.where('deck').equals(Number(deckId));
+		const numericDeckId = Number(deckId);
+		console.log(`Filtering questions by deck ID: ${deckId} -> ${numericDeckId}`);
+		query = db.questions.where('deck').equals(numericDeckId);
 	} else {
+		console.log('No deck filter - getting all questions');
 		query = db.questions.toCollection();
 	}
 	
 	// Apply other filters
-	if (type) query = query.filter(q => q.type === type);
-	if (tag) query = query.filter(q => (q.tags || []).some(t => t.toLowerCase().includes(tag)));
+	if (type) {
+		console.log(`Applying type filter: ${type}`);
+		query = query.filter(q => q.type === type);
+	}
+	if (tag) {
+		console.log(`Applying tag filter: ${tag}`);
+		query = query.filter(q => (q.tags || []).some(t => t.toLowerCase().includes(tag)));
+	}
 	if (search) {
+		console.log(`Applying search filter: ${search}`);
 		query = query.filter(q =>
 			q.prompt.toLowerCase().includes(search) ||
 			(q.answer || '').toLowerCase().includes(search) ||
 			(q.explain || '').toLowerCase().includes(search)
 		);
 	}
+	
+	console.log(`Filters applied: type=${!!type}, tag=${!!tag}, search=${!!search}`);
 
 	let questions;
 	try {
-		// If we have filters, we need to get all and sort manually
-		if (deckId || type || tag || search) {
-			questions = await query.toArray();
-			questions = questions.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
-		} else {
-			// If no filters, use orderBy directly on the table
-			questions = await db.questions.orderBy('sortOrder').toArray();
-		}
+		console.log('Applying query to get questions...');
+		questions = await query.toArray();
+		console.log(`Query returned ${questions.length} questions before sorting`);
+		
+		// Sort by sortOrder if available, otherwise by ID (newest first)
+		questions = questions.sort((a, b) => {
+			if (a.sortOrder !== undefined && b.sortOrder !== undefined) {
+				return a.sortOrder - b.sortOrder;
+			}
+			return (b.id || 0) - (a.id || 0); // Newest first for questions without sortOrder
+		});
+		
+		console.log(`Final result: ${questions.length} questions after sorting`);
 	} catch (error) {
-		if (error.name === 'SchemaError' && error.message.includes('sortOrder')) {
-			// Fallback to default ordering for old schema
-			console.warn('Database schema outdated, using default ordering');
-			questions = await query.toArray();
-		} else {
-			throw error;
-		}
+		console.error('Error retrieving questions:', error);
+		questions = [];
 	}
 	const [, decks] = await Promise.all([Promise.resolve(), getDecks()]);
 	const deckMap = new Map(decks.map(d => [d.id, d.name]));
+	
+	// Debug: show total questions and sample data
+	const totalQuestions = await db.questions.count();
+	console.log(`Total questions in DB: ${totalQuestions}, Filtered: ${questions.length}`);
+	
+	if (questions.length > 0) {
+		console.log('First question:', {
+			id: questions[0].id,
+			deck: questions[0].deck,
+			type: questions[0].type,
+			prompt: questions[0].prompt?.substring(0, 50) + '...'
+		});
+	}
 
 	let html = '';
 	questions.forEach((q, index) => {
@@ -2531,7 +2728,7 @@ async function resetAll() {
 }
 
 async function resetData() {
-	if (!confirm('샘플 데이터를 추가하시겠습니까? 기존 데이터는 유지됩니다.')) {
+	if (!confirm('백엔드 면접 문제 샘플 데이터를 추가하시겠습니까? 기존 데이터는 유지됩니다.')) {
 		return;
 	}
 	try {
@@ -2543,23 +2740,46 @@ async function resetData() {
 			return;
 		}
 
+		// Try to load backend interview data from markdown file
+		let { questions: interviewQuestions, decks: interviewDecks } = await loadBackendInterviewData();
+		
+		// If loading fails, use fallback sample data
+		if (interviewQuestions.length === 0) {
+			console.log('Using fallback sample data');
+			const fallbackData = getBackendInterviewSampleData();
+			interviewQuestions = fallbackData.questions;
+			interviewDecks = fallbackData.decks;
+		}
+
 		const deckIdMap = {};
-		for (const d of defaultDecks) {
+		for (const d of interviewDecks) {
 			const existing = await db.decks.where('name').equalsIgnoreCase(d.name).first();
 			if (existing) {
 				deckIdMap[d.id] = existing.id;
+				console.log(`Using existing deck "${d.name}" with ID ${existing.id}`);
 			} else {
 				const newId = await db.decks.add({ name: d.name, created: new Date() });
 				deckIdMap[d.id] = newId;
+				console.log(`Created new deck "${d.name}" with ID ${newId}`);
 			}
 		}
+		console.log('Deck ID mapping:', deckIdMap);
 
-		for (const q of sampleQuestions) {
+		for (const q of interviewQuestions) {
 			const newQ = { ...q, id: undefined, deck: deckIdMap[q.deck] || null, created: new Date() };
-			await db.questions.add(newQ);
+			console.log(`Adding question: "${newQ.prompt?.substring(0, 50)}..." to deck ${newQ.deck} (${q.deck})`);
+			console.log('Question data:', {
+				type: newQ.type,
+				deck: newQ.deck,
+				hasPrompt: !!newQ.prompt,
+				hasAnswer: !!newQ.answer,
+				keywords: newQ.keywords?.length || 0
+			});
+			const questionId = await db.questions.add(newQ);
+			console.log(`Question added with ID: ${questionId}`);
 		}
 
-		showToast('샘플 데이터가 추가되었습니다.', 'success');
+		showToast(`백엔드 면접 샘플 데이터가 추가되었습니다. (${interviewQuestions.length}개 문제)`, 'success');
 		await updateAllLists();
 	} catch (e) {
 		console.error('resetData error', e);
@@ -2628,7 +2848,7 @@ async function saveSettings() {
   applyFontSize(newSettings.fontSize);
   applyFocusMode(newSettings.focusMode);
   
-  updateDueLeftUI();
+  // Update progress with new settings
   await updateProgress();
   showToast('설정이 저장되었습니다', 'success');
 }
@@ -3464,6 +3684,33 @@ document.addEventListener('DOMContentLoaded', async function() {
  try {
    // Initialize theme first
    try { if (typeof initTheme === 'function') initTheme(); } catch (_) {}
+   
+   // Initialize database with health check to ensure persistence
+   let databaseReady = false;
+   try {
+     const dbResult = await initializeDatabaseWithHealthCheck();
+     console.log('Database initialized:', dbResult.message);
+     databaseReady = true;
+   } catch (error) {
+     console.error('Database initialization failed:', error);
+     
+     // Attempt to enable localStorage fallback
+     const fallbackEnabled = enableFallbackStorage();
+     if (fallbackEnabled) {
+       console.log('Fallback storage enabled - using localStorage');
+       databaseReady = true;
+     } else {
+       showToast('저장소 초기화 실패 - 데이터가 저장되지 않습니다', 'error');
+       databaseReady = false;
+     }
+   }
+   
+   // Show storage status information
+   if (isFallbackEnabled()) {
+     const storageInfo = getFallbackStorageInfo();
+     console.log('Using fallback storage:', storageInfo);
+   }
+   
    // Initialize database and run migration if needed
    await migrateFromLocalStorage();
    
@@ -3482,6 +3729,32 @@ document.addEventListener('DOMContentLoaded', async function() {
   
   // Initialize UI handlers and events
   bindEvents();
+  
+  // Initialize persistence monitoring
+  try {
+    initializePersistenceMonitoring();
+    console.log('Persistence monitoring initialized');
+  } catch (error) {
+    console.error('Failed to initialize persistence monitoring:', error);
+  }
+  
+  // Initialize Docker persistence features
+  try {
+    // Check and restore from backup if no data exists
+    const restored = await checkAndRestore();
+    if (restored) {
+      console.log('Data restored from Docker backup');
+      // Refresh UI after restoration
+      await updateHeader();
+      await updateDeckSelects();
+    }
+    
+    // Enable automatic backup
+    enableAutoBackup();
+    console.log('Docker persistence features enabled');
+  } catch (error) {
+    console.error('Failed to initialize Docker persistence:', error);
+  }
   
   // Note: Global functions are already bound at module load time for immediate HTML access
   
@@ -4010,19 +4283,38 @@ async function testAIConnection() {
 let generatedQuestions = [];
 
 async function generateQuestions() {
-  const topic = document.getElementById('aiTopic').value.trim();
   const difficulty = document.getElementById('aiDifficulty').value;
   const questionType = document.getElementById('aiQuestionType').value;
   const deckId = document.getElementById('aiDeckSelect').value;
   const count = parseInt(document.getElementById('aiQuestionCount').value);
 
-  if (!topic) {
-    showToast('주제를 입력해주세요', 'danger');
+  if (!deckId) {
+    showToast('덱을 선택해주세요', 'danger');
     return;
   }
 
-  if (!deckId) {
-    showToast('덱을 선택해주세요', 'danger');
+  // Get deck context for topic generation
+  let topic = '';
+  let contextQuestions = [];
+  try {
+    // First validate that the deck exists
+    const deck = await getDeck(parseInt(deckId));
+    if (!deck) {
+      throw new Error('Deck not found');
+    }
+    topic = deck.name;
+    contextQuestions = await getQuestions(parseInt(deckId));
+  } catch (error) {
+    console.error('Failed to get deck context:', error);
+    
+    // Refresh the deck list in case it's outdated
+    await updateDeckSelects();
+    
+    if (error.type === 'NO_DATA_FOUND') {
+      showToast('선택한 덱을 찾을 수 없습니다. 덱 목록을 새로고침했습니다.', 'warning');
+    } else {
+      showToast('덱 정보를 가져올 수 없습니다. 다른 덱을 선택해 보세요.', 'danger');
+    }
     return;
   }
 
@@ -4042,7 +4334,7 @@ async function generateQuestions() {
     const { getAdapter } = await import('./ai/index.js');
     const adapter = getAdapter('cloud');
 
-    const prompt = buildGenerationPrompt(topic, difficulty, questionType, count);
+    const prompt = buildGenerationPrompt(topic, difficulty, questionType, count, contextQuestions);
     
     const result = await adapter.generateQuestions({
       prompt: prompt,
@@ -4085,7 +4377,7 @@ async function generateQuestions() {
   }
 }
 
-function buildGenerationPrompt(topic, difficulty, questionType, count) {
+function buildGenerationPrompt(topic, difficulty, questionType, count, contextQuestions = []) {
   const difficultyMap = {
     'beginner': '초급 (기본 개념과 정의 중심)',
     'intermediate': '중급 (응용과 분석 중심)', 
@@ -4098,7 +4390,15 @@ function buildGenerationPrompt(topic, difficulty, questionType, count) {
     'KEYWORD': '키워드형 문제 (핵심 단어들로 채점)'
   };
 
-  return `컴퓨터 과학 주제 "${topic}"에 대해 ${difficultyMap[difficulty]} ${typeMap[questionType]}을 ${count}개 생성해주세요.
+  let contextText = '';
+  if (contextQuestions.length > 0) {
+    const sampleQuestions = contextQuestions.slice(0, 5).map(q => 
+      `- ${q.prompt}`
+    ).join('\n');
+    contextText = `\n\n덱 "${topic}"의 기존 문제들을 참고하여 비슷한 주제와 스타일로 생성해주세요:\n${sampleQuestions}\n`;
+  }
+
+  return `컴퓨터 과학 주제 "${topic}"에 대해 ${difficultyMap[difficulty]} ${typeMap[questionType]}을 ${count}개 생성해주세요.${contextText}
 
 **중요: 반드시 아래의 정확한 JSON 형식으로만 응답하세요. 다른 텍스트나 설명은 포함하지 마세요.**
 
@@ -4179,6 +4479,9 @@ async function saveGeneratedQuestions() {
   try {
     let savedCount = 0;
     
+    console.log('Saving questions to deck:', deckId, 'type:', questionType);
+    console.log('Selected questions:', selectedQuestions);
+    
     for (const q of selectedQuestions) {
       const questionData = {
         deck: parseInt(deckId),
@@ -4188,7 +4491,8 @@ async function saveGeneratedQuestions() {
         explain: q.explanation,
         created: Date.now(),
         tags: ['ai-generated'],
-        generated: true
+        generated: true,
+        sortOrder: savedCount // Add sort order for proper ordering
       };
 
       if (questionType === 'KEYWORD' && q.keywords) {
@@ -4198,8 +4502,10 @@ async function saveGeneratedQuestions() {
         questionData.keywords = arr;
       }
 
-      await db.questions.add(questionData);
+      console.log('Saving question data:', questionData);
+      await addQuestion(questionData);
       savedCount++;
+      console.log(`Question ${savedCount} saved successfully`);
     }
 
     showToast(`${savedCount}개 문제가 저장되었습니다`, 'success');
@@ -4210,16 +4516,19 @@ async function saveGeneratedQuestions() {
     
   } catch (error) {
     console.error('Failed to save questions:', error);
-    showToast('문제 저장 중 오류가 발생했습니다', 'danger');
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      type: error.type,
+      name: error.name
+    });
+    showToast(`문제 저장 중 오류가 발생했습니다: ${error.message}`, 'danger');
   }
 }
 
 function cancelGeneration() {
   generatedQuestions = [];
   document.getElementById('generatedPreview').style.display = 'none';
-  
-  // Clear form
-  document.getElementById('aiTopic').value = '';
 }
 
 // Additional global bindings for immediate HTML compatibility
@@ -4229,7 +4538,7 @@ window.revealAnswer = revealAnswer;
 window.gradeAnswer = gradeAnswerLegacy;
 window.submitAnswer = submitAnswer;
 window.startSession = startSessionLegacy;
-window.addQuestion = addQuestion;
+window.addQuestion = addQuestionLegacy;
 window.addDeck = addDeck;
 // Keep using data-management module implementations
 window.exportData = dmExportData;
@@ -4241,6 +4550,7 @@ window.deleteDeck = deleteDeck;
 // Additional functions for HTML compatibility
 window.updateAnswerField = updateAnswerField;
 window.updateHeader = updateHeader;
+window.updateDailyGoalProgress = updateDailyGoalProgress;
 window.updateDeckSelects = updateDeckSelects;
 window.updateDeckList = updateDeckList;
 window.updateQuestionList = updateQuestionList;

@@ -137,11 +137,19 @@ export async function deleteDeck(id) {
 
 export async function getQuestions(deckId = null) {
   return await withErrorHandling(async () => {
-    let query = getDb().table('questions');
+    const db = getDb();
     if (deckId) {
-      query = query.where('deck').equals(deckId);
+      // When filtering by deck, use where().sortBy() instead of orderBy()
+      return await db.table('questions')
+        .where('deck')
+        .equals(deckId)
+        .sortBy('sortOrder');
+    } else {
+      // When getting all questions, use orderBy()
+      return await db.table('questions')
+        .orderBy('sortOrder')
+        .toArray();
     }
-    return await query.orderBy('sortOrder').toArray();
   }, {
     operation: '문제 목록 조회',
     table: 'questions',

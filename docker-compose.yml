@@ -9,6 +9,7 @@ services:
     volumes:
       - .:/app
       - /app/node_modules
+      - ./data/backups:/app/backups  # Mount backup directory for persistence
     environment:
       - NODE_ENV=development
     command: ["npx", "serve", ".", "-l", "8000", "--cors"]
